@@ -48,6 +48,16 @@ harness against it. Any extra flags are forwarded to the harness:
 - **textkit** — implement eight independent string helpers (`WordCount`,
   `CountVowels`, `IsPalindrome`, `Acronym`, `RunLengthEncode`/`RunLengthDecode`,
   `Rotate`, `Title`). The same idea as `numkit`, one size up.
+- **todo** — a server-rendered **htmx** todo app (`package main`): `net/http`
+  handlers over a concurrency-safe in-memory store, pages rendered with
+  `html/template`, and templates plus static assets (a vendored `htmx.min.js` and
+  `app.css`) served from `embed.FS`. The seed ships the spec (`todo_test.go`,
+  which drives the handlers through `httptest`) and the static assets; the agent
+  writes `main.go` and the templates. The largest, most Go-idiomatic example —
+  multiple endpoints, fragment-vs-page rendering, HTML escaping, method routing —
+  so it has real quality variance for `/judge` and is the most likely to span
+  passes. After a run, view it: `cd sandbox && go run .`, then open
+  http://localhost:8080.
 
 ## Cross-pass memory (and why these examples one-shot here)
 
@@ -83,3 +93,19 @@ this model. The `-memory` ablation and these fixtures are kept for the cases tha
 iterates, or a task genuinely larger than one context window. To reproduce: each
 run appends to `logs/runs.jsonl` (gitignored) with `memory`/`passes`/`outcome` —
 on this model every row reads `passes: 1`, `outcome: completed`, either memory setting.
+
+## Measuring code quality
+
+Passing the tests means the code is *correct* — not that it is *good*. Those are
+different axes, and the harness only gates on the first. The `judge` skill
+(`.claude/skills/judge/SKILL.md`) measures the second: it scores the produced
+code (Go idiomaticity, simplicity, contract fidelity, readability, robustness,
+performance) on a 0–1 scale anchored to Opus, **blind to the spec's tests**, and
+appends the result to `logs/judgments.jsonl`. Run it after a harness run, best in
+a fresh Opus session:
+
+    /judge        # grades ./sandbox against the example's PROMPT.md
+
+It is out-of-band measurement, never a gate — the agent never sees it. The `todo`
+example exists partly to give it something with real quality variance to grade.
+See the skill for the rubric and its caveats.
