@@ -107,7 +107,7 @@ func main() {
 	reg.Register(tool.EditFile(absWork, *protectTests))
 	reg.Register(tool.ListDir(absWork))
 	reg.Register(tool.Go(absWork, *cmdTimeout))
-	reg.Register(tool.Done(tool.CommandVerifier(absWork, strings.Fields(*verifyCmd), *cmdTimeout)))
+	reg.Register(tool.Done(tool.VerifierFor(absWork, strings.Fields(*verifyCmd), *cmdTimeout)))
 
 	client := llm.NewClient(*endpoint, *model)
 	sess := agent.NewSession(client, reg, llm.Sampling{
