@@ -18,7 +18,11 @@ import (
 	"harness/internal/tool"
 )
 
-const defaultSystem = `You are an autonomous software engineer working in a Go workspace.
+// The system prompt is assembled from three parts so the cross-pass memory
+// guidance can be toggled out by -memory=false (see systemPrompt). The memory
+// bullet is the only difference between the two variants; everything else is
+// shared, so the prompt cannot drift between modes.
+const systemHead = `You are an autonomous software engineer working in a Go workspace.
 You act by calling tools, observe the results, and continue until the task is complete.
 
 Workspace and tools:
@@ -28,10 +32,27 @@ Workspace and tools:
 - done signals completion. The harness then runs verification; if it passes the run ends, otherwise you receive the errors and must fix them and call done again.
 
 How to work:
-- Work in small, verified increments. After changing code, run go build ./... then go test ./... and fix failures before continuing.
-- Your context is reset between passes. Keep a short PROGRESS.md at the workspace root recording what is done, what remains, and key decisions. Read it first each pass and keep it current — it is your memory across resets.
+- Work in small, verified increments. After changing code, run go build ./... then go test ./... and fix failures before continuing.`
+
+// memoryGuidance tells the agent it has cross-pass memory via PROGRESS.md. It is
+// included only when -memory is on; -memory=false drops it and wipes PROGRESS.md
+// before each pass, so a run measures how well the model resumes from the
+// persisted code alone (see wipeScratch and the Ralph loop in run).
+const memoryGuidance = `
+- Your context is reset between passes. Keep a short PROGRESS.md at the workspace root recording what is done, what remains, and key decisions. Read it first each pass and keep it current — it is your memory across resets.`
+
+const systemTail = `
 - Use only the Go standard library unless the task explicitly requires otherwise. Keep changes minimal and idiomatic.
 - Do not call done until the implementation is complete and you expect verification to pass.`
+
+// systemPrompt returns the built-in system prompt, including the PROGRESS.md
+// memory guidance only when memory is true.
+func systemPrompt(memory bool) string {
+	if memory {
+		return systemHead + memoryGuidance + systemTail
+	}
+	return systemHead + systemTail
+}
 
 // Process exit codes. 2 is intentionally unused: the flag package and the
 // missing-prompt check already use it for usage errors, its conventional
@@ -60,6 +81,7 @@ func main() {
 	cmdTimeout := flag.Duration("cmd-timeout", 5*time.Minute, "timeout per go/verify command")
 	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
 	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
+	memory := flag.Bool("memory", true, "carry PROGRESS.md across passes as the agent's plan memory; -memory=false ablates it (drops the PROGRESS.md guidance from the built-in prompt and wipes PROGRESS.md before each pass) to measure resumption from the persisted code alone")
 
 	maxTokens := flag.Int("max-tokens", 32768, "max output tokens per call")
 	temp := flag.Float64("temp", 0.6, "temperature")
@@ -86,7 +108,7 @@ func main() {
 		log.Error("read prompt", "err", err)
 		os.Exit(exitFault)
 	}
-	system := defaultSystem
+	system := systemPrompt(*memory)
 	if *systemPath != "" {
 		b, err := os.ReadFile(*systemPath)
 		if err != nil {
@@ -132,6 +154,7 @@ func main() {
 	prompt := string(promptBytes)
 	rec := RunLog{
 		Model:             *model,
+		Memory:            *memory,
 		CtxLimit:          *ctxLimit,
 		MaxIters:          *maxIters,
 		MaxSteps:          *maxSteps,
@@ -143,8 +166,8 @@ func main() {
 		RepetitionPenalty: *repPenalty,
 		PresencePenalty:   *presencePenalty,
 	}
-	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters)
-	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, verifier, rec))
+	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters, "memory", *memory)
+	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, *memory, verifier, rec))
 }
 
 // run drives the Ralph loop: it re-runs the session with a fresh context each
@@ -153,8 +176,10 @@ func main() {
 // gate's Verifier, reused by the end-of-pass probe (see the loop body). os.Exit
 // stays in main, so the loop's control logic is exercised directly by tests.
 // When logDir is set it appends one RunLog record (config, outcome, aggregate
-// metrics) on exit.
-func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, logDir, system, prompt string, maxStale int, verify tool.Verifier, rec RunLog) int {
+// metrics) on exit. When memory is false the agent's plan memory is ablated:
+// PROGRESS.md is wiped before each pass, so the run measures how well the model
+// resumes from the persisted code alone rather than from its own notes.
+func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, logDir, system, prompt string, maxStale int, memory bool, verify tool.Verifier, rec RunLog) int {
 	start := time.Now()
 	rec.Time = start.Format(time.RFC3339)
 	rec.Outcome = "fault"
@@ -173,9 +198,17 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 	// verifier against; it starts at the seed so the probe fires only once the
 	// model has actually changed something.
 	lastVerified, _ := fingerprint(workdir)
-	var prevFP string
-	var stale int
+	stale := staleTracker{limit: maxStale}
 	for iter := 1; iter <= rec.MaxIters; iter++ {
+		// Memory ablation: with -memory=false, remove PROGRESS.md before the
+		// pass so the model cannot carry plan notes across the context reset.
+		// scratchFiles are excluded from the fingerprint, so wiping them never
+		// perturbs the stagnation guard.
+		if !memory {
+			if err := wipeScratch(workdir); err != nil {
+				log.Warn("wipe scratch files", "err", err)
+			}
+		}
 		log.Info("ralph pass", "iter", iter, "max", rec.MaxIters)
 		res, err := sess.Run(ctx, system, prompt)
 		total.Add(res.Metrics)
@@ -217,20 +250,15 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 			return exitCompleted
 		}
 
-		// Stagnation guard: if consecutive passes leave the workspace
-		// byte-for-byte unchanged, the model is stuck — a fresh context will
+		// Stagnation guard: consecutive passes that leave the workspace
+		// byte-for-byte unchanged mean the model is stuck — a fresh context will
 		// only reproduce the same non-result, so stop instead of burning the
 		// remaining budget. A failed fingerprint is non-fatal: skip the check.
-		if maxStale > 0 && ferr == nil {
-			if prevFP != "" && fp == prevFP {
-				stale++
-			} else {
-				stale = 0
-			}
-			prevFP = fp
-			log.Debug("workspace fingerprint", "iter", iter, "stale", stale, "hash", fp)
-			if stale >= maxStale {
-				log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale, "iter", iter)
+		if ferr == nil {
+			stalled := stale.update(fp)
+			log.Debug("workspace fingerprint", "iter", iter, "stale", stale.count, "hash", fp)
+			if stalled {
+				log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale.count, "iter", iter)
 				rec.Outcome = "stagnated"
 				return exitStagnated
 			}

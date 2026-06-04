@@ -14,6 +14,7 @@ import (
 type RunLog struct {
 	Time              string   `json:"time"`
 	Model             string   `json:"model"`
+	Memory            bool     `json:"memory"`  // was PROGRESS.md cross-pass memory enabled (-memory)
 	Outcome           string   `json:"outcome"` // completed | stagnated | budget | interrupted | fault
 	Passes            int      `json:"passes"`
 	PassReasons       []string `json:"pass_reasons"`

@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // scratchFiles are agent-maintained bookkeeping files excluded from the
@@ -16,6 +17,45 @@ import (
 // model that is stuck but still dutifully taking notes. The fingerprint therefore
 // tracks the code/spec, the surface that decides the verify outcome.
 var scratchFiles = map[string]bool{"PROGRESS.md": true}
+
+// staleTracker counts consecutive Ralph passes that left the workspace
+// fingerprint byte-for-byte unchanged. The outer loop folds each pass's
+// fingerprint in with update, which reports whether the run has stalled for
+// limit passes running (limit 0 disables the guard). Keeping this state in one
+// type keeps the loop body — and its cyclomatic complexity — small.
+type staleTracker struct {
+	limit int
+	prev  string
+	count int
+}
+
+// update folds fp into the tracker and reports whether the workspace has now
+// gone unchanged for limit consecutive passes. The first fingerprint only
+// establishes a baseline (prev is empty), so it can never trip the guard.
+func (s *staleTracker) update(fp string) (stalled bool) {
+	if s.prev != "" && fp == s.prev {
+		s.count++
+	} else {
+		s.count = 0
+	}
+	s.prev = fp
+	return s.limit > 0 && s.count >= s.limit
+}
+
+// wipeScratch removes the agent scratch files (scratchFiles) from root, ignoring
+// any that are absent. The Ralph loop calls it before each pass when cross-pass
+// memory is ablated (-memory=false): deleting PROGRESS.md guarantees the model
+// cannot carry plan notes across the context reset, so the run measures
+// resumption from the persisted code alone. Because scratchFiles are excluded
+// from the fingerprint, wiping them never disturbs the stagnation guard.
+func wipeScratch(root string) error {
+	for name := range scratchFiles {
+		if err := os.Remove(filepath.Join(root, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
 
 // fingerprint returns a SHA-256 digest over every regular file under root except
 // the agent scratch files in scratchFiles — each remaining file's path and bytes

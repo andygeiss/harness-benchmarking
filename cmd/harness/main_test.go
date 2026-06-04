@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"harness/internal/agent"
@@ -53,7 +54,7 @@ func TestRunCompletes(t *testing.T) {
 	reg.Register(tool.Done(func(_ context.Context) (bool, string, error) { return true, "", nil }))
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "do it", 3, nil, RunLog{MaxIters: 5}); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "do it", 3, true, nil, RunLog{MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
 	}
 }
@@ -63,7 +64,7 @@ func TestRunCompletes(t *testing.T) {
 func TestRunStagnates(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, nil, RunLog{MaxIters: 10}); code != exitStagnated {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, true, nil, RunLog{MaxIters: 10}); code != exitStagnated {
 		t.Fatalf("exit = %d, want exitStagnated (%d)", code, exitStagnated)
 	}
 }
@@ -73,7 +74,7 @@ func TestRunStagnates(t *testing.T) {
 func TestRunExhaustsBudget(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 0, nil, RunLog{MaxIters: 3}); code != exitBudget {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 0, true, nil, RunLog{MaxIters: 3}); code != exitBudget {
 		t.Fatalf("exit = %d, want exitBudget (%d)", code, exitBudget)
 	}
 }
@@ -87,7 +88,7 @@ func TestRunWritesLog(t *testing.T) {
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
 	logDir := t.TempDir()
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, nil, RunLog{Model: "test", MaxIters: 5}); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, true, nil, RunLog{Model: "test", MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted", code)
 	}
 	data, err := os.ReadFile(filepath.Join(logDir, "runs.jsonl"))
@@ -125,7 +126,7 @@ func TestRunCompletesViaProbe(t *testing.T) {
 	}
 
 	logDir := t.TempDir()
-	code := run(context.Background(), discardLog(), sess, work, logDir, "sys", "go", 3, verify, RunLog{MaxIters: 5})
+	code := run(context.Background(), discardLog(), sess, work, logDir, "sys", "go", 3, true, verify, RunLog{MaxIters: 5})
 	if code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
 	}
@@ -145,5 +146,81 @@ func TestRunCompletesViaProbe(t *testing.T) {
 	}
 	if len(got.PassReasons) != 1 || got.PassReasons[0] != "model_stop" {
 		t.Errorf("pass_reasons = %v, want [model_stop] (completion via the probe, not done)", got.PassReasons)
+	}
+}
+
+// TestSystemPromptMemoryToggle: the built-in prompt mentions PROGRESS.md only
+// when memory is on, and otherwise shares the same head, so the two modes differ
+// by exactly the memory guidance and cannot silently drift apart.
+func TestSystemPromptMemoryToggle(t *testing.T) {
+	on, off := systemPrompt(true), systemPrompt(false)
+	if !strings.Contains(on, "PROGRESS.md") {
+		t.Error("memory-on prompt should mention PROGRESS.md")
+	}
+	if strings.Contains(off, "PROGRESS.md") {
+		t.Error("memory-off prompt must not mention PROGRESS.md")
+	}
+	if !strings.Contains(on, systemHead) || !strings.Contains(off, systemHead) {
+		t.Error("both prompts must share the common head")
+	}
+}
+
+// TestWipeScratch removes the scratch files and leaves everything else; a second
+// call is a no-op rather than an error.
+func TestWipeScratch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "PROGRESS.md"), []byte("notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wipeScratch(dir); err != nil {
+		t.Fatalf("wipeScratch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "PROGRESS.md")); !os.IsNotExist(err) {
+		t.Error("PROGRESS.md should have been removed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep.go")); err != nil {
+		t.Errorf("keep.go should remain: %v", err)
+	}
+	if err := wipeScratch(dir); err != nil {
+		t.Fatalf("second wipeScratch (nothing to remove): %v", err)
+	}
+}
+
+// TestRunWipesProgressWhenMemoryOff: with memory off the loop removes PROGRESS.md
+// before each pass, so a note in the workspace does not survive; with memory on it
+// is left untouched. The model does nothing (stopResponse), so the run ends via
+// the stagnation guard either way — only PROGRESS.md's fate differs.
+func TestRunWipesProgressWhenMemoryOff(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		memory bool
+		gone   bool
+	}{
+		{"memory off wipes", false, true},
+		{"memory on keeps", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			progress := filepath.Join(work, "PROGRESS.md")
+			if err := os.WriteFile(progress, []byte("done: nothing"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(work, "keep.go"), []byte("package p\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
+			run(context.Background(), discardLog(), sess, work, "", "sys", "go", 2, tc.memory, nil, RunLog{MaxIters: 10})
+
+			_, err := os.Stat(progress)
+			if tc.gone && !os.IsNotExist(err) {
+				t.Error("PROGRESS.md should have been wiped with memory off")
+			}
+			if !tc.gone && err != nil {
+				t.Errorf("PROGRESS.md should remain with memory on: %v", err)
+			}
+		})
 	}
 }
