@@ -33,6 +33,17 @@ How to work:
 - Use only the Go standard library unless the task explicitly requires otherwise. Keep changes minimal and idiomatic.
 - Do not call done until the implementation is complete and you expect verification to pass.`
 
+// Process exit codes. 2 is intentionally unused: the flag package and the
+// missing-prompt check already use it for usage errors, its conventional
+// meaning. The non-zero loop outcomes are kept distinct so a caller can tell a
+// stuck model (exitStagnated) from one that simply ran out of passes (exitBudget).
+const (
+	exitCompleted = 0 // task verified complete, or the run was cleanly interrupted
+	exitFault     = 1 // a setup step failed, or an unexpected error occurred
+	exitStagnated = 3 // the workspace went unchanged across passes; the model is stuck
+	exitBudget    = 4 // the Ralph pass budget ran out before completion
+)
+
 func main() {
 	endpoint := flag.String("endpoint", "http://localhost:1234/v1", "base URL of the OpenAI-compatible oMLX server")
 	model := flag.String("model", "Qwen3.6-35B-A3B-oQ6-fp16-mtp", "model name")
@@ -71,21 +82,21 @@ func main() {
 	promptBytes, err := os.ReadFile(*promptPath)
 	if err != nil {
 		log.Error("read prompt", "err", err)
-		os.Exit(1)
+		os.Exit(exitFault)
 	}
 	system := defaultSystem
 	if *systemPath != "" {
 		b, err := os.ReadFile(*systemPath)
 		if err != nil {
 			log.Error("read system prompt", "err", err)
-			os.Exit(1)
+			os.Exit(exitFault)
 		}
 		system = string(b)
 	}
 	absWork, err := filepath.Abs(*workdir)
 	if err != nil {
 		log.Error("resolve workdir", "err", err)
-		os.Exit(1)
+		os.Exit(exitFault)
 	}
 
 	reg := tool.NewRegistry()
@@ -117,14 +128,22 @@ func main() {
 
 	prompt := string(promptBytes)
 	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters)
+	os.Exit(run(ctx, log, sess, absWork, system, prompt, *maxIters, *maxStale))
+}
+
+// run drives the Ralph loop: it re-runs the session with a fresh context each
+// pass until the task verifies complete, the workspace stagnates, or the pass
+// budget is exhausted, and returns the process exit code. os.Exit stays in main,
+// so the loop's control logic is exercised directly by tests.
+func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, system, prompt string, maxIters, maxStale int) int {
 	var prevFP string
 	var stale int
-	for iter := 1; iter <= *maxIters; iter++ {
-		log.Info("ralph pass", "iter", iter, "max", *maxIters)
+	for iter := 1; iter <= maxIters; iter++ {
+		log.Info("ralph pass", "iter", iter, "max", maxIters)
 		res, err := sess.Run(ctx, system, prompt)
 		if ctx.Err() != nil {
 			log.Info("interrupted")
-			return
+			return exitCompleted
 		}
 		if err != nil {
 			log.Error("pass failed", "iter", iter, "err", err)
@@ -132,7 +151,7 @@ func main() {
 			log.Info("pass ended", "iter", iter, "reason", res.Reason, "steps", res.Steps)
 			if res.Completed {
 				log.Info("task complete and verified", "passes", iter)
-				return
+				return exitCompleted
 			}
 		}
 
@@ -140,8 +159,8 @@ func main() {
 		// byte-for-byte unchanged, the model is stuck — a fresh context will
 		// only reproduce the same non-result, so stop instead of burning the
 		// remaining budget. A failed fingerprint is non-fatal: skip the check.
-		if *maxStale > 0 {
-			fp, ferr := fingerprint(absWork)
+		if maxStale > 0 {
+			fp, ferr := fingerprint(workdir)
 			if ferr != nil {
 				log.Warn("fingerprint workspace", "err", ferr)
 			} else {
@@ -152,13 +171,13 @@ func main() {
 				}
 				prevFP = fp
 				log.Debug("workspace fingerprint", "iter", iter, "stale", stale, "hash", fp)
-				if stale >= *maxStale {
+				if stale >= maxStale {
 					log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale, "iter", iter)
-					os.Exit(1)
+					return exitStagnated
 				}
 			}
 		}
 	}
-	log.Warn("reached max Ralph passes without completion", "max", *maxIters)
-	os.Exit(1)
+	log.Warn("reached max Ralph passes without completion", "max", maxIters)
+	return exitBudget
 }
