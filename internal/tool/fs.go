@@ -44,11 +44,19 @@ func ReadFile(root string) Tool {
 	}
 }
 
-// WriteFile returns a tool that creates or replaces a file within root.
-func WriteFile(root string) Tool {
+// WriteFile returns a tool that creates or replaces a file within root. When
+// protectTests is set it refuses to write Go test files: they are the fixed
+// specification the agent must satisfy, not author — otherwise a model can pass
+// verification by gutting the tests or shimming the runner (e.g. a TestMain that
+// exits 0) instead of implementing the code.
+func WriteFile(root string, protectTests bool) Tool {
+	desc := "Create or overwrite a file. Writes the ENTIRE file, so provide the complete intended contents. Paths are relative to the workspace root."
+	if protectTests {
+		desc += " You cannot write Go test files (*_test.go) — they are the fixed specification."
+	}
 	return Tool{
 		Name:        "write_file",
-		Description: "Create or overwrite a file. Writes the ENTIRE file, so provide the complete intended contents. Paths are relative to the workspace root.",
+		Description: desc,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -64,6 +72,9 @@ func WriteFile(root string) Tool {
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if protectTests && isTestFile(a.Path) {
+				return "", errProtectedTest(a.Path)
 			}
 			abs, err := safeJoin(root, a.Path)
 			if err != nil {
@@ -81,10 +92,15 @@ func WriteFile(root string) Tool {
 }
 
 // EditFile returns a tool that replaces an exact, unique snippet within a file.
-func EditFile(root string) Tool {
+// Like WriteFile it refuses Go test files when protectTests is set.
+func EditFile(root string, protectTests bool) Tool {
+	desc := "Replace an exact, unique snippet of text in a file. old_string must occur EXACTLY once — include enough surrounding context to make it unique. Prefer this over write_file for small changes. Paths are relative to the workspace root."
+	if protectTests {
+		desc += " You cannot edit Go test files (*_test.go) — they are the fixed specification."
+	}
 	return Tool{
 		Name:        "edit_file",
-		Description: "Replace an exact, unique snippet of text in a file. old_string must occur EXACTLY once — include enough surrounding context to make it unique. Prefer this over write_file for small changes. Paths are relative to the workspace root.",
+		Description: desc,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -102,6 +118,9 @@ func EditFile(root string) Tool {
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if protectTests && isTestFile(a.Path) {
+				return "", errProtectedTest(a.Path)
 			}
 			if a.OldString == "" {
 				return "", fmt.Errorf("old_string must not be empty; use write_file to create a file")
@@ -187,6 +206,17 @@ func ListDir(root string) Tool {
 			return strings.Join(lines, "\n"), nil
 		},
 	}
+}
+
+// isTestFile reports whether p names a Go test file (its base ends with _test.go).
+func isTestFile(p string) bool {
+	return strings.HasSuffix(filepath.Base(p), "_test.go")
+}
+
+// errProtectedTest is returned when a write to a Go test file is refused; the
+// message steers the model to change the implementation rather than the spec.
+func errProtectedTest(path string) error {
+	return fmt.Errorf("writing test files is not permitted (%s): the tests are the fixed specification — change the implementation to satisfy them, not the tests", filepath.Base(path))
 }
 
 // safeJoin resolves p against root and keeps the result inside root. Prefixing

@@ -56,6 +56,7 @@ func main() {
 	ctxLimit := flag.Int("ctx-limit", 52000, "end a pass once total tokens reach this")
 	maxStale := flag.Int("max-stale", 3, "stop after this many consecutive passes leave the workspace unchanged (0 disables)")
 	logDir := flag.String("log-dir", "logs", "directory for the JSONL run log, relative to the working dir (empty disables)")
+	protectTests := flag.Bool("protect-tests", true, "refuse agent writes to *_test.go files — the tests are the fixed spec, not the model's to author")
 	cmdTimeout := flag.Duration("cmd-timeout", 5*time.Minute, "timeout per go/verify command")
 	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
 	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
@@ -102,8 +103,8 @@ func main() {
 
 	reg := tool.NewRegistry()
 	reg.Register(tool.ReadFile(absWork))
-	reg.Register(tool.WriteFile(absWork))
-	reg.Register(tool.EditFile(absWork))
+	reg.Register(tool.WriteFile(absWork, *protectTests))
+	reg.Register(tool.EditFile(absWork, *protectTests))
 	reg.Register(tool.ListDir(absWork))
 	reg.Register(tool.Go(absWork, *cmdTimeout))
 	reg.Register(tool.Done(tool.CommandVerifier(absWork, strings.Fields(*verifyCmd), *cmdTimeout)))

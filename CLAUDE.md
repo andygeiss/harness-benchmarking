@@ -32,6 +32,7 @@ go run ./cmd/harness -prompt task.md -workdir ./sandbox
 #   -debug    log the model's reasoning trace
 #   -verify   verification command for the done-gate (default: "go test ./...")
 #   -log-dir  append a per-run JSONL record here (default: "logs"; empty disables)
+#   -protect-tests  refuse agent writes to *_test.go (default: true)
 
 # Run a bundled example (copies its seed to ./sandbox, then runs the harness):
 go run ./cmd/example reverse
@@ -55,5 +56,6 @@ Packages under `internal/`: `llm` (HTTP client + DTOs for the OpenAI-compatible 
 - **Completion is a sentinel, not a return value.** `tool.Done` runs the verification command and returns `tool.ErrCompleted` *only if it passes*; `agent.runTool` detects that via `errors.Is` to end the run successfully. A failing verification is fed back to the model as an ordinary tool result so it keeps working. This is the only path that terminates the loop as "done." As a guard, if `done` fails `maxDoneFails` times in one pass with no file-mutating tool call in between, the session ends the pass early (`reason=done_loop`) so a model looping on an unsatisfiable check can't burn the step budget; the cross-pass stagnation guard then halts the run.
 - **Execution is Go-toolchain-only.** The `go` tool (`gocmd.go`) and the verifier (`done.go`) both run through `exec.go`'s `runCmd`, and `go` is restricted to an allowlist (`build`/`test`/`vet`/`fmt`/`mod`). There is intentionally no general shell/`run` tool.
 - **Filesystem tools are sandboxed.** Every path is resolved through `safeJoin`, which keeps access inside the workspace root.
+- **Tests are the spec; the agent cannot author them.** With `-protect-tests` (default on), `write_file`/`edit_file` refuse `*_test.go` paths (`isTestFile` in `fs.go`). This closes a reward-hacking path: otherwise a model can pass the `go test` done-gate by gutting a test or adding a `TestMain` shim that exits 0 instead of implementing the code. A verifier is only trustworthy if the model cannot write the spec it is graded against.
 - **Streaming is transparent to the loop.** `CompleteStream` assembles SSE frames (accumulating tool-call arguments per `index`) into the *same* `*Response` shape as `Complete`, so the loop logic is identical whether or not `-stream` is set.
 - **Transient LLM failures are retried, not fatal.** `llm.Retryable` flags transport errors, truncated reads, and 5xx responses as transient; `agent.complete` retries those with backoff (`maxRetries`) before failing the pass. A cancelled context, 4xx, and decode errors fail immediately. Separately, when the model names a tool that isn't registered, `runTool` feeds back an error listing the valid tools so it can recover instead of looping on a malformed call.

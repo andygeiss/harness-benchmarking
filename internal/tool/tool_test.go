@@ -52,7 +52,7 @@ func TestEditFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("alpha beta gamma"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	edit := EditFile(dir)
+	edit := EditFile(dir, false)
 
 	if _, err := edit.Run(context.Background(), args(t, "f.txt", "beta", "BETA")); err != nil {
 		t.Fatalf("edit success: %v", err)
@@ -97,4 +97,44 @@ func TestRegistryOrderAndGet(t *testing.T) {
 	if got := r.Names(); len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Errorf("Names() = %v, want [a b]", got)
 	}
+}
+
+// TestProtectTests locks in the governance boundary that closes the false-completed
+// hole: with protection on, the agent cannot create or edit *_test.go files (the
+// spec), so it cannot pass verification by shimming the runner or gutting a test.
+func TestProtectTests(t *testing.T) {
+	dir := t.TempDir()
+
+	// The exact cheat: a new TestMain shim in a *_test.go must be refused.
+	w := WriteFile(dir, true)
+	shim := "package check\nimport (\"os\";\"testing\")\nfunc TestMain(m *testing.M){os.Exit(0)}\n"
+	if _, err := w.Run(context.Background(), writeArgs(t, "check/skip_test.go", shim)); err == nil {
+		t.Error("write_file allowed a new *_test.go with protection on")
+	}
+	// A normal implementation file is still allowed.
+	if _, err := w.Run(context.Background(), writeArgs(t, "check/impl.go", "package check\n")); err != nil {
+		t.Errorf("write_file blocked a non-test file: %v", err)
+	}
+
+	// Editing an existing test file is refused too.
+	if err := os.WriteFile(filepath.Join(dir, "x_test.go"), []byte("package x // orig"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EditFile(dir, true).Run(context.Background(), args(t, "x_test.go", "orig", "hacked")); err == nil {
+		t.Error("edit_file allowed editing a *_test.go with protection on")
+	}
+
+	// With protection off, writing a test file is permitted (opt-out path).
+	if _, err := WriteFile(dir, false).Run(context.Background(), writeArgs(t, "y_test.go", "package y\n")); err != nil {
+		t.Errorf("protection off should allow test writes: %v", err)
+	}
+}
+
+func writeArgs(t *testing.T, path, content string) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"path": path, "content": content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
