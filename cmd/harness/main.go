@@ -107,7 +107,8 @@ func main() {
 	reg.Register(tool.EditFile(absWork, *protectTests))
 	reg.Register(tool.ListDir(absWork))
 	reg.Register(tool.Go(absWork, *cmdTimeout))
-	reg.Register(tool.Done(tool.VerifierFor(absWork, strings.Fields(*verifyCmd), *cmdTimeout)))
+	verifier := tool.VerifierFor(absWork, strings.Fields(*verifyCmd), *cmdTimeout)
+	reg.Register(tool.Done(verifier))
 
 	client := llm.NewClient(*endpoint, *model)
 	sess := agent.NewSession(client, reg, llm.Sampling{
@@ -143,15 +144,17 @@ func main() {
 		PresencePenalty:   *presencePenalty,
 	}
 	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters)
-	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, rec))
+	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, verifier, rec))
 }
 
 // run drives the Ralph loop: it re-runs the session with a fresh context each
 // pass until the task verifies complete, the workspace stagnates, or the pass
-// budget is exhausted, and returns the process exit code. os.Exit stays in main,
-// so the loop's control logic is exercised directly by tests. When logDir is set
-// it appends one RunLog record (config, outcome, aggregate metrics) on exit.
-func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, logDir, system, prompt string, maxStale int, rec RunLog) int {
+// budget is exhausted, and returns the process exit code. verify is the done
+// gate's Verifier, reused by the end-of-pass probe (see the loop body). os.Exit
+// stays in main, so the loop's control logic is exercised directly by tests.
+// When logDir is set it appends one RunLog record (config, outcome, aggregate
+// metrics) on exit.
+func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, logDir, system, prompt string, maxStale int, verify tool.Verifier, rec RunLog) int {
 	start := time.Now()
 	rec.Time = start.Format(time.RFC3339)
 	rec.Outcome = "fault"
@@ -166,6 +169,10 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 		}()
 	}
 
+	// lastVerified is the workspace state the end-of-pass probe last ran the
+	// verifier against; it starts at the seed so the probe fires only once the
+	// model has actually changed something.
+	lastVerified, _ := fingerprint(workdir)
 	var prevFP string
 	var stale int
 	for iter := 1; iter <= rec.MaxIters; iter++ {
@@ -191,31 +198,66 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 			}
 		}
 
+		// Fingerprint the workspace once; the end-of-pass probe and the
+		// stagnation guard both key off whether this pass changed anything.
+		fp, ferr := fingerprint(workdir)
+		if ferr != nil {
+			log.Warn("fingerprint workspace", "err", ferr)
+		}
+
+		// End-of-pass verification probe: when the pass changed the workspace
+		// but the model stopped without a successful done, run the same gate
+		// here and finish now if it passes, instead of spending another pass
+		// only to re-verify already-correct code (see probeComplete).
+		done, lv := probeComplete(ctx, log, verify, fp, lastVerified, iter)
+		lastVerified = lv
+		if done {
+			log.Info("task complete and verified", "passes", iter, "via", "end-of-pass probe")
+			rec.Outcome = "completed"
+			return exitCompleted
+		}
+
 		// Stagnation guard: if consecutive passes leave the workspace
 		// byte-for-byte unchanged, the model is stuck — a fresh context will
 		// only reproduce the same non-result, so stop instead of burning the
 		// remaining budget. A failed fingerprint is non-fatal: skip the check.
-		if maxStale > 0 {
-			fp, ferr := fingerprint(workdir)
-			if ferr != nil {
-				log.Warn("fingerprint workspace", "err", ferr)
+		if maxStale > 0 && ferr == nil {
+			if prevFP != "" && fp == prevFP {
+				stale++
 			} else {
-				if prevFP != "" && fp == prevFP {
-					stale++
-				} else {
-					stale = 0
-				}
-				prevFP = fp
-				log.Debug("workspace fingerprint", "iter", iter, "stale", stale, "hash", fp)
-				if stale >= maxStale {
-					log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale, "iter", iter)
-					rec.Outcome = "stagnated"
-					return exitStagnated
-				}
+				stale = 0
+			}
+			prevFP = fp
+			log.Debug("workspace fingerprint", "iter", iter, "stale", stale, "hash", fp)
+			if stale >= maxStale {
+				log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale, "iter", iter)
+				rec.Outcome = "stagnated"
+				return exitStagnated
 			}
 		}
 	}
 	log.Warn("reached max Ralph passes without completion", "max", rec.MaxIters)
 	rec.Outcome = "budget"
 	return exitBudget
+}
+
+// probeComplete is the outer-loop counterpart to the model calling done: when a
+// pass has advanced the workspace (fp != lastVerified) it runs the SAME Verifier
+// the done gate uses, so a model that finished the work but stopped without
+// signalling completion is recognised here instead of wasting another pass. It
+// returns whether the task now verifies and the fingerprint to remember as last
+// verified — advanced to fp once the gate gives a definitive answer (so identical
+// bytes are not re-verified), left unchanged on a transient verifier error so the
+// next pass may retry. A nil verify, a failed fingerprint (fp==""), or an
+// unchanged workspace is a no-op.
+func probeComplete(ctx context.Context, log *slog.Logger, verify tool.Verifier, fp, lastVerified string, iter int) (completed bool, verified string) {
+	if verify == nil || fp == "" || fp == lastVerified {
+		return false, lastVerified
+	}
+	ok, _, err := verify(ctx)
+	if err != nil {
+		log.Warn("end-of-pass verify probe could not run", "iter", iter, "err", err)
+		return false, lastVerified
+	}
+	return ok, fp
 }

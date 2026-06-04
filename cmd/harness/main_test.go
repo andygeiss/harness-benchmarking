@@ -53,7 +53,7 @@ func TestRunCompletes(t *testing.T) {
 	reg.Register(tool.Done(func(_ context.Context) (bool, string, error) { return true, "", nil }))
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "do it", 3, RunLog{MaxIters: 5}); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "do it", 3, nil, RunLog{MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
 	}
 }
@@ -63,7 +63,7 @@ func TestRunCompletes(t *testing.T) {
 func TestRunStagnates(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, RunLog{MaxIters: 10}); code != exitStagnated {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, nil, RunLog{MaxIters: 10}); code != exitStagnated {
 		t.Fatalf("exit = %d, want exitStagnated (%d)", code, exitStagnated)
 	}
 }
@@ -73,7 +73,7 @@ func TestRunStagnates(t *testing.T) {
 func TestRunExhaustsBudget(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 0, RunLog{MaxIters: 3}); code != exitBudget {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 0, nil, RunLog{MaxIters: 3}); code != exitBudget {
 		t.Fatalf("exit = %d, want exitBudget (%d)", code, exitBudget)
 	}
 }
@@ -87,7 +87,7 @@ func TestRunWritesLog(t *testing.T) {
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
 	logDir := t.TempDir()
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, RunLog{Model: "test", MaxIters: 5}); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, nil, RunLog{Model: "test", MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted", code)
 	}
 	data, err := os.ReadFile(filepath.Join(logDir, "runs.jsonl"))
@@ -103,5 +103,47 @@ func TestRunWritesLog(t *testing.T) {
 	}
 	if got.Model != "test" || got.ModelCalls < 1 || got.ToolCalls < 1 || got.TotalTokens != 10 {
 		t.Errorf("metrics not recorded as expected: %+v", got)
+	}
+}
+
+// TestRunCompletesViaProbe: the model changes the workspace (writes a file) but
+// stops without calling done. The outer loop's end-of-pass probe runs the
+// verifier on the already-changed workspace, finds it green, and completes the
+// run in that same pass — no extra pass spent only to call the gate. The log
+// shows the giveaway: a single pass that ended model_stop, yet outcome=completed.
+func TestRunCompletesViaProbe(t *testing.T) {
+	writeCall := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"w","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"impl.go\",\"content\":\"package p\\n\"}"}}]}}],"usage":{"total_tokens":10}}`
+	work := t.TempDir()
+	reg := tool.NewRegistry()
+	reg.Register(tool.WriteFile(work, false))
+	sess := newSession(scriptedServer(t, writeCall, stopResponse), reg)
+
+	var probed bool
+	verify := func(_ context.Context) (bool, string, error) {
+		probed = true
+		return true, "", nil // the changed workspace passes verification
+	}
+
+	logDir := t.TempDir()
+	code := run(context.Background(), discardLog(), sess, work, logDir, "sys", "go", 3, verify, RunLog{MaxIters: 5})
+	if code != exitCompleted {
+		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
+	}
+	if !probed {
+		t.Fatal("the end-of-pass probe never ran the verifier")
+	}
+	data, err := os.ReadFile(filepath.Join(logDir, "runs.jsonl"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var got RunLog
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("log not valid JSON: %v", err)
+	}
+	if got.Outcome != "completed" || got.Passes != 1 {
+		t.Errorf("outcome=%q passes=%d, want completed/1", got.Outcome, got.Passes)
+	}
+	if len(got.PassReasons) != 1 || got.PassReasons[0] != "model_stop" {
+		t.Errorf("pass_reasons = %v, want [model_stop] (completion via the probe, not done)", got.PassReasons)
 	}
 }
