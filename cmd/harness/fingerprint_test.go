@@ -57,3 +57,45 @@ func TestFingerprint(t *testing.T) {
 		t.Fatal("removing the added file should restore the prior fingerprint")
 	}
 }
+
+// TestFingerprintIgnoresProgress guards against the stagnation guard being blinded
+// by the agent's own bookkeeping: the system prompt tells the model to rewrite
+// PROGRESS.md every pass, so its content must not move the fingerprint — otherwise
+// a stuck-but-note-taking model would reset the stale counter forever. Real code
+// changes must still register.
+func TestFingerprintIgnoresProgress(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fp := func() string {
+		t.Helper()
+		h, err := fingerprint(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	write("main.go", "package main")
+	base := fp()
+
+	// Creating the scratchpad must not move the fingerprint.
+	write("PROGRESS.md", "pass 1: started")
+	if fp() != base {
+		t.Fatal("adding PROGRESS.md changed the fingerprint")
+	}
+	// Nor must rewriting it — exactly the churn the prompt mandates each pass.
+	write("PROGRESS.md", "pass 2: still stuck, trying a different approach")
+	if fp() != base {
+		t.Fatal("rewriting PROGRESS.md changed the fingerprint")
+	}
+	// But a real code change must still register as progress.
+	write("main.go", "package main // implemented")
+	if fp() == base {
+		t.Fatal("a real .go change must still move the fingerprint")
+	}
+}
