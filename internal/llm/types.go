@@ -102,9 +102,18 @@ type ResponseMessage struct {
 	ToolCalls        []ToolCall `json:"tool_calls"`
 }
 
-// Usage reports token accounting for a single call.
+// Usage reports token accounting for a single call. TotalTime and
+// PromptTokensDetails are oMLX extensions (server-side seconds and prompt-cache
+// hits); they are zero/absent on servers that don't report them.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	TotalTime           float64              `json:"total_time"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails carries the prompt-cache breakdown some servers report.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }

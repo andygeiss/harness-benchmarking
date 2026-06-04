@@ -55,6 +55,7 @@ func main() {
 	maxSteps := flag.Int("max-steps", 40, "maximum tool steps per pass")
 	ctxLimit := flag.Int("ctx-limit", 52000, "end a pass once total tokens reach this")
 	maxStale := flag.Int("max-stale", 3, "stop after this many consecutive passes leave the workspace unchanged (0 disables)")
+	logDir := flag.String("log-dir", "logs", "directory for the JSONL run log, relative to the working dir (empty disables)")
 	cmdTimeout := flag.Duration("cmd-timeout", 5*time.Minute, "timeout per go/verify command")
 	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
 	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
@@ -127,30 +128,64 @@ func main() {
 	defer stop()
 
 	prompt := string(promptBytes)
+	rec := RunLog{
+		Model:             *model,
+		CtxLimit:          *ctxLimit,
+		MaxIters:          *maxIters,
+		MaxSteps:          *maxSteps,
+		MaxTokens:         *maxTokens,
+		Temperature:       *temp,
+		TopP:              *topP,
+		TopK:              *topK,
+		MinP:              *minP,
+		RepetitionPenalty: *repPenalty,
+		PresencePenalty:   *presencePenalty,
+	}
 	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters)
-	os.Exit(run(ctx, log, sess, absWork, system, prompt, *maxIters, *maxStale))
+	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, rec))
 }
 
 // run drives the Ralph loop: it re-runs the session with a fresh context each
 // pass until the task verifies complete, the workspace stagnates, or the pass
 // budget is exhausted, and returns the process exit code. os.Exit stays in main,
-// so the loop's control logic is exercised directly by tests.
-func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, system, prompt string, maxIters, maxStale int) int {
+// so the loop's control logic is exercised directly by tests. When logDir is set
+// it appends one RunLog record (config, outcome, aggregate metrics) on exit.
+func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, logDir, system, prompt string, maxStale int, rec RunLog) int {
+	start := time.Now()
+	rec.Time = start.Format(time.RFC3339)
+	rec.Outcome = "fault"
+	var total agent.Metrics
+	if logDir != "" {
+		defer func() {
+			rec.DurationSec = time.Since(start).Seconds()
+			rec.Metrics = total
+			if err := appendRunLog(logDir, rec); err != nil {
+				log.Warn("write run log", "err", err)
+			}
+		}()
+	}
+
 	var prevFP string
 	var stale int
-	for iter := 1; iter <= maxIters; iter++ {
-		log.Info("ralph pass", "iter", iter, "max", maxIters)
+	for iter := 1; iter <= rec.MaxIters; iter++ {
+		log.Info("ralph pass", "iter", iter, "max", rec.MaxIters)
 		res, err := sess.Run(ctx, system, prompt)
+		total.Add(res.Metrics)
+		rec.Passes = iter
 		if ctx.Err() != nil {
 			log.Info("interrupted")
+			rec.Outcome = "interrupted"
 			return exitCompleted
 		}
 		if err != nil {
 			log.Error("pass failed", "iter", iter, "err", err)
+			rec.PassReasons = append(rec.PassReasons, "error")
 		} else {
 			log.Info("pass ended", "iter", iter, "reason", res.Reason, "steps", res.Steps)
+			rec.PassReasons = append(rec.PassReasons, res.Reason)
 			if res.Completed {
 				log.Info("task complete and verified", "passes", iter)
+				rec.Outcome = "completed"
 				return exitCompleted
 			}
 		}
@@ -173,11 +208,13 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, sy
 				log.Debug("workspace fingerprint", "iter", iter, "stale", stale, "hash", fp)
 				if stale >= maxStale {
 					log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale, "iter", iter)
+					rec.Outcome = "stagnated"
 					return exitStagnated
 				}
 			}
 		}
 	}
-	log.Warn("reached max Ralph passes without completion", "max", maxIters)
+	log.Warn("reached max Ralph passes without completion", "max", rec.MaxIters)
+	rec.Outcome = "budget"
 	return exitBudget
 }

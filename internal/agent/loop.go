@@ -47,6 +47,42 @@ type Result struct {
 	Completed bool   // task verified complete via the done gate
 	Reason    string // completed | model_stop | context | max_steps | done_loop | empty
 	Steps     int
+	Metrics   Metrics // token and call counters aggregated over the pass
+}
+
+// Metrics aggregates token and timing counters across model calls — over one
+// pass in a Result, or summed across passes for a whole run.
+type Metrics struct {
+	ModelCalls       int     `json:"model_calls"`
+	ToolCalls        int     `json:"tool_calls"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	CachedTokens     int     `json:"cached_tokens"`
+	ServerTimeSec    float64 `json:"server_time_sec"`
+}
+
+// record folds one model call's usage into the metrics.
+func (m *Metrics) record(u llm.Usage) {
+	m.ModelCalls++
+	m.PromptTokens += u.PromptTokens
+	m.CompletionTokens += u.CompletionTokens
+	m.TotalTokens += u.TotalTokens
+	m.ServerTimeSec += u.TotalTime
+	if u.PromptTokensDetails != nil {
+		m.CachedTokens += u.PromptTokensDetails.CachedTokens
+	}
+}
+
+// Add folds o into m, summing each counter.
+func (m *Metrics) Add(o Metrics) {
+	m.ModelCalls += o.ModelCalls
+	m.ToolCalls += o.ToolCalls
+	m.PromptTokens += o.PromptTokens
+	m.CompletionTokens += o.CompletionTokens
+	m.TotalTokens += o.TotalTokens
+	m.CachedTokens += o.CachedTokens
+	m.ServerTimeSec += o.ServerTimeSec
 }
 
 // maxDoneFails ends a pass after this many done calls fail verification with no
@@ -61,15 +97,17 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 	}
 	specs := s.registry.Specs()
 
+	var m Metrics
 	failedDones := 0
 	for step := 1; step <= s.cfg.MaxSteps; step++ {
 		resp, err := s.complete(ctx, s.request(msgs, specs))
 		if err != nil {
-			return Result{}, err
+			return Result{Metrics: m}, err
 		}
 		if len(resp.Choices) == 0 {
-			return Result{Reason: "empty", Steps: step}, nil
+			return Result{Reason: "empty", Steps: step, Metrics: m}, nil
 		}
+		m.record(resp.Usage)
 
 		choice := resp.Choices[0]
 		content, reasoning := llm.SplitReasoning(choice.Message)
@@ -86,14 +124,15 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 
 		if len(choice.Message.ToolCalls) == 0 {
 			s.log.Info("model stopped", "step", step, "finish", choice.FinishReason)
-			return Result{Reason: "model_stop", Steps: step}, nil
+			return Result{Reason: "model_stop", Steps: step, Metrics: m}, nil
 		}
 
 		for _, tc := range choice.Message.ToolCalls {
+			m.ToolCalls++
 			result, completed := s.runTool(ctx, tc)
 			msgs = append(msgs, llm.Message{Role: llm.RoleTool, ToolCallID: tc.ID, Content: result})
 			if completed {
-				return Result{Completed: true, Reason: "completed", Steps: step}, nil
+				return Result{Completed: true, Reason: "completed", Steps: step, Metrics: m}, nil
 			}
 			// End the pass if done keeps failing with no file change between
 			// attempts: the model is looping on a check it cannot satisfy. A
@@ -104,7 +143,7 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 				failedDones++
 				if failedDones >= maxDoneFails {
 					s.log.Info("done repeatedly failed with no change; ending pass", "step", step, "attempts", failedDones)
-					return Result{Reason: "done_loop", Steps: step}, nil
+					return Result{Reason: "done_loop", Steps: step, Metrics: m}, nil
 				}
 			case "write_file", "edit_file":
 				failedDones = 0
@@ -113,10 +152,10 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 
 		if s.cfg.CtxLimit > 0 && resp.Usage.TotalTokens >= s.cfg.CtxLimit {
 			s.log.Info("context budget reached; ending pass", "step", step, "tokens", resp.Usage.TotalTokens)
-			return Result{Reason: "context", Steps: step}, nil
+			return Result{Reason: "context", Steps: step, Metrics: m}, nil
 		}
 	}
-	return Result{Reason: "max_steps", Steps: s.cfg.MaxSteps}, nil
+	return Result{Reason: "max_steps", Steps: s.cfg.MaxSteps, Metrics: m}, nil
 }
 
 // maxRetries is how many times complete retries a transient LLM failure.

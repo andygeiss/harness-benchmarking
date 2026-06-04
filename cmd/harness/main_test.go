@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"harness/internal/agent"
@@ -50,7 +53,7 @@ func TestRunCompletes(t *testing.T) {
 	reg.Register(tool.Done(func(_ context.Context) (bool, string, error) { return true, "", nil }))
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "sys", "do it", 5, 3); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "do it", 3, RunLog{MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
 	}
 }
@@ -60,7 +63,7 @@ func TestRunCompletes(t *testing.T) {
 func TestRunStagnates(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "sys", "go", 10, 2); code != exitStagnated {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, RunLog{MaxIters: 10}); code != exitStagnated {
 		t.Fatalf("exit = %d, want exitStagnated (%d)", code, exitStagnated)
 	}
 }
@@ -70,7 +73,35 @@ func TestRunStagnates(t *testing.T) {
 func TestRunExhaustsBudget(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "sys", "go", 3, 0); code != exitBudget {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 0, RunLog{MaxIters: 3}); code != exitBudget {
 		t.Fatalf("exit = %d, want exitBudget (%d)", code, exitBudget)
+	}
+}
+
+// TestRunWritesLog: a completed run appends one valid RunLog line with the
+// outcome and aggregate metrics filled in.
+func TestRunWritesLog(t *testing.T) {
+	doneCall := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c","type":"function","function":{"name":"done","arguments":"{\"summary\":\"ok\"}"}}]}}],"usage":{"total_tokens":10}}`
+	reg := tool.NewRegistry()
+	reg.Register(tool.Done(func(_ context.Context) (bool, string, error) { return true, "", nil }))
+	sess := newSession(scriptedServer(t, doneCall), reg)
+
+	logDir := t.TempDir()
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, RunLog{Model: "test", MaxIters: 5}); code != exitCompleted {
+		t.Fatalf("exit = %d, want exitCompleted", code)
+	}
+	data, err := os.ReadFile(filepath.Join(logDir, "runs.jsonl"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var got RunLog
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("log line is not valid JSON: %v", err)
+	}
+	if got.Outcome != "completed" || got.Passes != 1 {
+		t.Errorf("outcome=%q passes=%d, want completed/1", got.Outcome, got.Passes)
+	}
+	if got.Model != "test" || got.ModelCalls < 1 || got.ToolCalls < 1 || got.TotalTokens != 10 {
+		t.Errorf("metrics not recorded as expected: %+v", got)
 	}
 }
