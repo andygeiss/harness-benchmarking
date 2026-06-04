@@ -34,3 +34,9 @@ harness against it. Any extra flags are forwarded to the harness:
   loop and the `PROGRESS.md` hand-off across context resets. To force/observe
   the cross-pass resume even on a fast model, cap the work per pass, e.g.
   `go run ./cmd/example calc -max-steps 15`.
+- **stuck** — an *adversarial* fixture: a test that asserts the year is 1999,
+  which no code can satisfy. The model has nothing productive to write, so the
+  workspace stops changing and the **stagnation guard** halts the run early
+  instead of looping to the iteration limit. Validates the guard end-to-end:
+  `go run ./cmd/example stuck` stops around iter 4 with the default
+  `-max-stale 3`; lower it (e.g. `-max-stale 2`) to halt sooner.
