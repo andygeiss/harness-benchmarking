@@ -1,0 +1,138 @@
+// Command harness runs a fixed prompt autonomously against a local oMLX-served
+// Qwen3.6 model, looping until the task verifies complete — a Go "Ralph" loop.
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"harness/internal/agent"
+	"harness/internal/llm"
+	"harness/internal/tool"
+)
+
+const defaultSystem = `You are an autonomous software engineer working in a Go workspace.
+You act by calling tools, observe the results, and continue until the task is complete.
+
+Workspace and tools:
+- All paths are relative to the workspace root; you cannot access files outside it.
+- read_file, write_file, edit_file, list_dir inspect and modify files. edit_file replaces an exact, unique snippet and is preferred for small changes; write_file replaces the WHOLE file (include the complete contents). Read a file before editing or overwriting it.
+- go runs the Go toolchain: ["build","./..."], ["test","./..."], ["vet","./..."], ["fmt","./..."], ["mod","tidy"].
+- done signals completion. The harness then runs verification; if it passes the run ends, otherwise you receive the errors and must fix them and call done again.
+
+How to work:
+- Work in small, verified increments. After changing code, run go build ./... then go test ./... and fix failures before continuing.
+- Your context is reset between passes. Keep a short PROGRESS.md at the workspace root recording what is done, what remains, and key decisions. Read it first each pass and keep it current — it is your memory across resets.
+- Use only the Go standard library unless the task explicitly requires otherwise. Keep changes minimal and idiomatic.
+- Do not call done until the implementation is complete and you expect verification to pass.`
+
+func main() {
+	endpoint := flag.String("endpoint", "http://localhost:1234/v1", "base URL of the OpenAI-compatible oMLX server")
+	model := flag.String("model", "Qwen3.6-35B-A3B-oQ6-fp16-mtp", "model name")
+	promptPath := flag.String("prompt", "", "path to the task prompt file (required)")
+	systemPath := flag.String("system", "", "path to a system prompt file (optional; overrides the built-in)")
+	workdir := flag.String("workdir", ".", "workspace directory the agent operates in")
+	verifyCmd := flag.String("verify", "go test ./...", "verification command run by the done gate")
+	maxIters := flag.Int("max-iters", 25, "maximum Ralph passes")
+	maxSteps := flag.Int("max-steps", 40, "maximum tool steps per pass")
+	ctxLimit := flag.Int("ctx-limit", 52000, "end a pass once total tokens reach this")
+	cmdTimeout := flag.Duration("cmd-timeout", 5*time.Minute, "timeout per go/verify command")
+	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
+	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
+
+	maxTokens := flag.Int("max-tokens", 32768, "max output tokens per call")
+	temp := flag.Float64("temp", 0.6, "temperature")
+	topP := flag.Float64("top-p", 0.95, "top_p")
+	topK := flag.Int("top-k", 20, "top_k")
+	minP := flag.Float64("min-p", 0, "min_p")
+	repPenalty := flag.Float64("rep-penalty", 1.0, "repetition_penalty")
+	presencePenalty := flag.Float64("presence-penalty", 0, "presence_penalty")
+	flag.Parse()
+
+	level := slog.LevelInfo
+	if *debug {
+		level = slog.LevelDebug
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	if *promptPath == "" {
+		log.Error("the -prompt flag is required")
+		flag.Usage()
+		os.Exit(2)
+	}
+	promptBytes, err := os.ReadFile(*promptPath)
+	if err != nil {
+		log.Error("read prompt", "err", err)
+		os.Exit(1)
+	}
+	system := defaultSystem
+	if *systemPath != "" {
+		b, err := os.ReadFile(*systemPath)
+		if err != nil {
+			log.Error("read system prompt", "err", err)
+			os.Exit(1)
+		}
+		system = string(b)
+	}
+	absWork, err := filepath.Abs(*workdir)
+	if err != nil {
+		log.Error("resolve workdir", "err", err)
+		os.Exit(1)
+	}
+
+	reg := tool.NewRegistry()
+	reg.Register(tool.ReadFile(absWork))
+	reg.Register(tool.WriteFile(absWork))
+	reg.Register(tool.EditFile(absWork))
+	reg.Register(tool.ListDir(absWork))
+	reg.Register(tool.Go(absWork, *cmdTimeout))
+	reg.Register(tool.Done(tool.CommandVerifier(absWork, strings.Fields(*verifyCmd), *cmdTimeout)))
+
+	client := llm.NewClient(*endpoint, *model)
+	sess := agent.NewSession(client, reg, llm.Sampling{
+		MaxTokens:         *maxTokens,
+		Temperature:       *temp,
+		TopP:              *topP,
+		TopK:              *topK,
+		MinP:              *minP,
+		RepetitionPenalty: *repPenalty,
+		PresencePenalty:   *presencePenalty,
+	}, log, agent.Config{
+		MaxSteps:  *maxSteps,
+		CtxLimit:  *ctxLimit,
+		Stream:    *stream,
+		StreamOut: os.Stderr,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	prompt := string(promptBytes)
+	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters)
+	for iter := 1; iter <= *maxIters; iter++ {
+		log.Info("ralph pass", "iter", iter, "max", *maxIters)
+		res, err := sess.Run(ctx, system, prompt)
+		if ctx.Err() != nil {
+			log.Info("interrupted")
+			return
+		}
+		if err != nil {
+			log.Error("pass failed", "iter", iter, "err", err)
+			continue
+		}
+		log.Info("pass ended", "iter", iter, "reason", res.Reason, "steps", res.Steps)
+		if res.Completed {
+			log.Info("task complete and verified", "passes", iter)
+			return
+		}
+	}
+	log.Warn("reached max Ralph passes without completion", "max", *maxIters)
+	os.Exit(1)
+}
