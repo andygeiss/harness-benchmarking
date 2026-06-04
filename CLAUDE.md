@@ -39,7 +39,7 @@ Defaults target the local setup (model name, `:1234` endpoint, Qwen3 thinking-mo
 Two nested loops; understanding the split is essential:
 
 - **Inner loop** (`agent.Session.Run`, `internal/agent/loop.go`): one tool-use session — call model → run tool calls → feed results back → repeat — until the model stops, the task completes, or a budget (max-steps / context tokens) trips.
-- **Outer loop** (the `for` in `cmd/harness/main.go`): the Ralph loop. It re-runs `Session.Run` with a **fresh context** each pass. State survives between passes only through the **filesystem** — the code being written, plus a `PROGRESS.md` the agent is told to maintain — never in memory. This is how the harness exceeds a single context window.
+- **Outer loop** (the `for` in `cmd/harness/main.go`): the Ralph loop. It re-runs `Session.Run` with a **fresh context** each pass. State survives between passes only through the **filesystem** — the code being written, plus a `PROGRESS.md` the agent is told to maintain — never in memory. This is how the harness exceeds a single context window. Between passes it fingerprints the workspace (`fingerprint` in `cmd/harness/fingerprint.go`); if `-max-stale` consecutive passes leave it byte-for-byte unchanged (default 3, 0 disables), the loop stops early instead of spending the remaining budget on a stuck model.
 
 Packages under `internal/`: `llm` (HTTP client + DTOs for the OpenAI-compatible API), `tool` (registry + built-in tools), `agent` (the inner session loop). `cmd/harness` wires them together and owns the Ralph loop and the system prompt.
 

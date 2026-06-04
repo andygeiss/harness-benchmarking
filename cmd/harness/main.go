@@ -43,6 +43,7 @@ func main() {
 	maxIters := flag.Int("max-iters", 25, "maximum Ralph passes")
 	maxSteps := flag.Int("max-steps", 40, "maximum tool steps per pass")
 	ctxLimit := flag.Int("ctx-limit", 52000, "end a pass once total tokens reach this")
+	maxStale := flag.Int("max-stale", 3, "stop after this many consecutive passes leave the workspace unchanged (0 disables)")
 	cmdTimeout := flag.Duration("cmd-timeout", 5*time.Minute, "timeout per go/verify command")
 	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
 	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
@@ -116,6 +117,8 @@ func main() {
 
 	prompt := string(promptBytes)
 	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters)
+	var prevFP string
+	var stale int
 	for iter := 1; iter <= *maxIters; iter++ {
 		log.Info("ralph pass", "iter", iter, "max", *maxIters)
 		res, err := sess.Run(ctx, system, prompt)
@@ -125,12 +128,35 @@ func main() {
 		}
 		if err != nil {
 			log.Error("pass failed", "iter", iter, "err", err)
-			continue
+		} else {
+			log.Info("pass ended", "iter", iter, "reason", res.Reason, "steps", res.Steps)
+			if res.Completed {
+				log.Info("task complete and verified", "passes", iter)
+				return
+			}
 		}
-		log.Info("pass ended", "iter", iter, "reason", res.Reason, "steps", res.Steps)
-		if res.Completed {
-			log.Info("task complete and verified", "passes", iter)
-			return
+
+		// Stagnation guard: if consecutive passes leave the workspace
+		// byte-for-byte unchanged, the model is stuck — a fresh context will
+		// only reproduce the same non-result, so stop instead of burning the
+		// remaining budget. A failed fingerprint is non-fatal: skip the check.
+		if *maxStale > 0 {
+			fp, ferr := fingerprint(absWork)
+			if ferr != nil {
+				log.Warn("fingerprint workspace", "err", ferr)
+			} else {
+				if prevFP != "" && fp == prevFP {
+					stale++
+				} else {
+					stale = 0
+				}
+				prevFP = fp
+				log.Debug("workspace fingerprint", "iter", iter, "stale", stale, "hash", fp)
+				if stale >= *maxStale {
+					log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale, "iter", iter)
+					os.Exit(1)
+				}
+			}
 		}
 	}
 	log.Warn("reached max Ralph passes without completion", "max", *maxIters)
