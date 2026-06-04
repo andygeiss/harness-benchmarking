@@ -30,6 +30,10 @@ go run ./cmd/harness -prompt task.md -workdir ./sandbox
 #   -stream   stream model tokens live to stderr
 #   -debug    log the model's reasoning trace
 #   -verify   verification command for the done-gate (default: "go test ./...")
+
+# Run a bundled example (copies its seed to ./sandbox, then runs the harness):
+go run ./cmd/example reverse
+go run ./cmd/example calc -stream
 ```
 
 Defaults target the local setup (model name, `:1234` endpoint, Qwen3 thinking-mode sampling: temp 0.6 / top_p 0.95 / top_k 20). All are overridable by flag — see `go run ./cmd/harness -h`.
@@ -41,7 +45,7 @@ Two nested loops; understanding the split is essential:
 - **Inner loop** (`agent.Session.Run`, `internal/agent/loop.go`): one tool-use session — call model → run tool calls → feed results back → repeat — until the model stops, the task completes, or a budget (max-steps / context tokens) trips.
 - **Outer loop** (the `for` in `cmd/harness/main.go`): the Ralph loop. It re-runs `Session.Run` with a **fresh context** each pass. State survives between passes only through the **filesystem** — the code being written, plus a `PROGRESS.md` the agent is told to maintain — never in memory. This is how the harness exceeds a single context window. Between passes it fingerprints the workspace (`fingerprint` in `cmd/harness/fingerprint.go`); if `-max-stale` consecutive passes leave it byte-for-byte unchanged (default 3, 0 disables), the loop stops early instead of spending the remaining budget on a stuck model.
 
-Packages under `internal/`: `llm` (HTTP client + DTOs for the OpenAI-compatible API), `tool` (registry + built-in tools), `agent` (the inner session loop). `cmd/harness` wires them together and owns the Ralph loop and the system prompt.
+Packages under `internal/`: `llm` (HTTP client + DTOs for the OpenAI-compatible API), `tool` (registry + built-in tools), `agent` (the inner session loop). `cmd/harness` wires them together and owns the Ralph loop and the system prompt. `cmd/example` is a convenience runner: it copies a bundled example's seed to `./sandbox` and launches the harness against it. `examples/` holds the example tasks — each a `PROMPT.md` plus a `workspace/` seed that ships the spec (a test) but no implementation. Every seed is its own Go module, so a deliberately-unimplemented seed is excluded from the repo's own `go test ./...` and never reddens the build.
 
 ### Invariants that span files (don't break these)
 
