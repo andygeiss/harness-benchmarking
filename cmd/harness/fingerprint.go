@@ -26,8 +26,8 @@ func fingerprint(root string) (string, error) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		io.WriteString(h, path)
+		defer func() { _ = f.Close() }()
+		h.Write([]byte(path))
 		h.Write([]byte{0}) // frame each entry so path/content boundaries can't alias
 		if _, err := io.Copy(h, f); err != nil {
 			return err

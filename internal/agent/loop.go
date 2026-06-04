@@ -153,13 +153,13 @@ func (s *Session) call(ctx context.Context, req llm.Request) (*llm.Response, err
 	}
 	resp, err := s.client.CompleteStream(ctx, req, s.onDelta)
 	if err == nil {
-		fmt.Fprintln(s.cfg.StreamOut) // terminate the streamed line
+		_, _ = fmt.Fprintln(s.cfg.StreamOut) // terminate the streamed line
 	}
 	return resp, err
 }
 
 func (s *Session) onDelta(_, text string) {
-	fmt.Fprint(s.cfg.StreamOut, text)
+	_, _ = fmt.Fprint(s.cfg.StreamOut, text)
 }
 
 func (s *Session) request(msgs []llm.Message, specs []llm.Tool) llm.Request {

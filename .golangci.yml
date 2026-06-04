@@ -1,0 +1,52 @@
+# golangci-lint config — a deterministic quality gate for this project, run
+# alongside gofmt/go vet/go test. A linter-enforced rule beats a prose rule:
+# it catches violations mechanically instead of relying on a reader to remember.
+#
+# Requires golangci-lint v2.x. Run:  golangci-lint run
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  enable:
+    - errcheck # unhandled errors
+    - govet # suspicious constructs
+    - staticcheck # broad correctness + style + deprecation checks
+    - ineffassign # ineffectual assignments
+    - unused # dead code
+    - revive # naming, stutter, early-return style
+    - errorlint # enforces errors.Is/As over ==, and %w wrapping
+    - gocyclo # flags deeply nested / complex functions
+    - bodyclose # unclosed HTTP response bodies (leak hygiene)
+    - noctx # HTTP requests without context.Context
+    - containedctx # context.Context stored in a struct field
+    - contextcheck # functions that should accept/propagate context
+
+  settings:
+    gocyclo:
+      min-complexity: 15 # keep functions small
+    revive:
+      rules:
+        - name: exported
+        - name: early-return
+        - name: var-naming # MixedCaps, initialisms (HTTP, ID, URL)
+        - name: receiver-naming # short, consistent receivers
+        - name: context-as-argument
+        - name: context-keys-type
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    rules:
+      # The example launcher relies on process-group signal delivery: the child
+      # harness installs its own handler and shuts down gracefully, so
+      # exec.CommandContext (which SIGKILLs on cancel) would only fight it.
+      - path: cmd/example/main\.go
+        linters:
+          - noctx
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

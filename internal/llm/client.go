@@ -66,7 +66,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 	if err != nil {
 		return nil, transient(fmt.Errorf("call endpoint: %w", err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -91,13 +91,16 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 // fully assembled response — identical in shape to Complete — once [DONE] is
 // seen. onDelta may be nil.
 func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(kind, text string)) (*Response, error) {
+	if onDelta == nil {
+		onDelta = func(string, string) {} // normalize once so the accumulation loop need not nil-check
+	}
 	req.Stream = true
 	req.StreamOptions = &StreamOptions{IncludeUsage: true}
 	resp, err := c.post(ctx, req)
 	if err != nil {
 		return nil, transient(fmt.Errorf("call endpoint: %w", err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
 		err := fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
@@ -117,16 +120,12 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(k
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64<<10), 4<<20) // tolerate long SSE lines
 	for sc.Scan() {
-		data, ok := strings.CutPrefix(sc.Text(), "data: ")
-		if !ok {
-			continue
-		}
-		if data == "[DONE]" {
+		chunk, ok, done := parseFrame(sc.Text())
+		if done {
 			break
 		}
-		var chunk streamChunk
-		if json.Unmarshal([]byte(data), &chunk) != nil {
-			continue // skip keepalive primers and any non-JSON lines
+		if !ok {
+			continue
 		}
 		if chunk.Usage != nil {
 			usage = *chunk.Usage
@@ -137,15 +136,11 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(k
 		ch := chunk.Choices[0]
 		if ch.Delta.ReasoningContent != "" {
 			reasoning.WriteString(ch.Delta.ReasoningContent)
-			if onDelta != nil {
-				onDelta("reasoning", ch.Delta.ReasoningContent)
-			}
+			onDelta("reasoning", ch.Delta.ReasoningContent)
 		}
 		if ch.Delta.Content != "" {
 			content.WriteString(ch.Delta.Content)
-			if onDelta != nil {
-				onDelta("content", ch.Delta.Content)
-			}
+			onDelta("content", ch.Delta.Content)
 		}
 		for _, tc := range ch.Delta.ToolCalls {
 			mergeToolCall(&toolCalls, tc)
@@ -170,6 +165,23 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(k
 		}},
 		Usage: usage,
 	}, nil
+}
+
+// parseFrame extracts the JSON chunk from one SSE line. ok is false for lines to
+// skip (non-data lines, keepalive primers, malformed JSON); done is true at the
+// terminating "data: [DONE]" sentinel.
+func parseFrame(line string) (chunk streamChunk, ok, done bool) {
+	data, hasData := strings.CutPrefix(line, "data: ")
+	if !hasData {
+		return chunk, false, false
+	}
+	if data == "[DONE]" {
+		return chunk, false, true
+	}
+	if json.Unmarshal([]byte(data), &chunk) != nil {
+		return chunk, false, false
+	}
+	return chunk, true, false
 }
 
 // streamChunk is one SSE delta frame.

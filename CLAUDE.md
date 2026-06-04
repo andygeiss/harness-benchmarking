@@ -14,16 +14,17 @@ These constraints are deliberate and override default instincts:
 - **Ask before adding.** Do not introduce new tools, features, abstractions, or dependencies without asking first. Grow the system incrementally from the existing seed.
 - **Standard library only.** No third-party dependencies. If one seems genuinely warranted, stop and make the case before adding it.
 - **Go is the only language.** No bash/python/js for tooling, scripts, or orchestration — that is the entire reason this harness exists in Go rather than as a shell loop. The agent itself may only run the Go toolchain (see the `go` tool's allowlist).
-- **Every change stays green:** `gofmt`, `go vet`, and `go test ./...` must all pass.
+- **Every change stays green:** `gofmt`, `go vet`, `go test ./...`, and `golangci-lint run` (config in `.golangci.yml`) must all pass. golangci-lint is a local dev gate, not a project dependency — it adds nothing to `go.mod`, so the standard-library-only rule above still holds for shipped code.
 
 ## Commands
 
 ```bash
-go build ./...                                   # compile
+go build ./...                                    # compile
 go vet ./...                                      # static checks
 go test ./...                                     # all tests
 go test ./internal/llm -run TestCompleteStream    # a single test
 gofmt -w .                                        # format
+golangci-lint run                                 # lint — config in .golangci.yml (requires golangci-lint v2.x)
 
 # Run the harness (expects an oMLX server at http://localhost:1234/v1):
 go run ./cmd/harness -prompt task.md -workdir ./sandbox
