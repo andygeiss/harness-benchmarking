@@ -45,9 +45,13 @@ func NewSession(client *llm.Client, registry *tool.Registry, sampling llm.Sampli
 // Result reports how a session ended.
 type Result struct {
 	Completed bool   // task verified complete via the done gate
-	Reason    string // completed | model_stop | context | max_steps | empty
+	Reason    string // completed | model_stop | context | max_steps | done_loop | empty
 	Steps     int
 }
+
+// maxDoneFails ends a pass after this many done calls fail verification with no
+// file-mutating tool call between them — a model looping on an unsatisfiable check.
+const maxDoneFails = 3
 
 // Run executes one session from a fresh context built from system and prompt.
 func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error) {
@@ -57,6 +61,7 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 	}
 	specs := s.registry.Specs()
 
+	failedDones := 0
 	for step := 1; step <= s.cfg.MaxSteps; step++ {
 		resp, err := s.complete(ctx, s.request(msgs, specs))
 		if err != nil {
@@ -89,6 +94,20 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 			msgs = append(msgs, llm.Message{Role: llm.RoleTool, ToolCallID: tc.ID, Content: result})
 			if completed {
 				return Result{Completed: true, Reason: "completed", Steps: step}, nil
+			}
+			// End the pass if done keeps failing with no file change between
+			// attempts: the model is looping on a check it cannot satisfy. A
+			// write/edit (real progress) resets the count. Names match the
+			// built-in tools.
+			switch tc.Function.Name {
+			case "done":
+				failedDones++
+				if failedDones >= maxDoneFails {
+					s.log.Info("done repeatedly failed with no change; ending pass", "step", step, "attempts", failedDones)
+					return Result{Reason: "done_loop", Steps: step}, nil
+				}
+			case "write_file", "edit_file":
+				failedDones = 0
 			}
 		}
 

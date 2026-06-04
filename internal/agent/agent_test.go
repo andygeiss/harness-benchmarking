@@ -130,3 +130,30 @@ func TestCompleteNoRetryOn4xx(t *testing.T) {
 		t.Errorf("server hit %d times, want 1 (no retry on 4xx)", n)
 	}
 }
+
+// TestDoneLoopEndsPass ends a pass once done keeps failing verification with no
+// intervening file change, instead of consuming the whole step budget.
+func TestDoneLoopEndsPass(t *testing.T) {
+	doneCall := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c","type":"function","function":{"name":"done","arguments":"{\"summary\":\"x\"}"}}]}}],"usage":{"total_tokens":1}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(doneCall))
+	}))
+	defer srv.Close()
+
+	reg := tool.NewRegistry()
+	reg.Register(tool.Done(func(_ context.Context) (bool, string, error) {
+		return false, "still failing", nil // verification never passes
+	}))
+
+	sess := NewSession(llm.NewClient(srv.URL, "m"), reg, llm.Sampling{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{MaxSteps: 20})
+	res, err := sess.Run(context.Background(), "sys", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Reason != "done_loop" {
+		t.Fatalf("reason = %q, want done_loop", res.Reason)
+	}
+	if res.Steps != maxDoneFails {
+		t.Errorf("steps = %d, want %d (early-out at the loop threshold)", res.Steps, maxDoneFails)
+	}
+}
