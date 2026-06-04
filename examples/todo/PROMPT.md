@@ -57,6 +57,8 @@ define it once (a named template) and reuse it for both.
 
 - `todo_test.go` — the spec.
 - `static/htmx.min.js`, `static/app.css` — embed and serve these as they are.
+  You do **not** need to read them — `htmx.min.js` is a large minified library;
+  just embed the `static/` directory and serve it at `/static/`.
 
 ## You create
 
