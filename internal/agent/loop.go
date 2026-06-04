@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
+	"time"
 
 	"harness/internal/llm"
 	"harness/internal/tool"
@@ -98,8 +100,35 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 	return Result{Reason: "max_steps", Steps: s.cfg.MaxSteps}, nil
 }
 
-// complete dispatches to the streaming or non-streaming client call.
+// maxRetries is how many times complete retries a transient LLM failure.
+const maxRetries = 2
+
+// complete calls the model, retrying transient failures (transport errors,
+// truncated reads, 5xx) with backoff. Permanent errors and a cancelled context
+// return immediately.
 func (s *Session) complete(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := s.call(ctx, req)
+		if err == nil || !llm.Retryable(err) || ctx.Err() != nil || attempt >= maxRetries {
+			return resp, err
+		}
+		wait := backoff(attempt)
+		s.log.Warn("transient LLM error; retrying", "attempt", attempt+1, "in", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// backoff returns the delay before retry attempt n (0-based): 200ms, 400ms, ...
+func backoff(n int) time.Duration {
+	return time.Duration(200<<n) * time.Millisecond
+}
+
+// call dispatches to the streaming or non-streaming client call.
+func (s *Session) call(ctx context.Context, req llm.Request) (*llm.Response, error) {
 	if !s.cfg.Stream {
 		return s.client.Complete(ctx, req)
 	}
@@ -135,7 +164,8 @@ func (s *Session) runTool(ctx context.Context, tc llm.ToolCall) (result string, 
 	t, ok := s.registry.Get(tc.Function.Name)
 	if !ok {
 		s.log.Warn("unknown tool", "name", tc.Function.Name)
-		return "ERROR: unknown tool " + tc.Function.Name, false
+		return fmt.Sprintf("ERROR: unknown tool %q. Available tools: %s. Call a tool through the function-calling API with a valid name; do not put the call in inline text.",
+			tc.Function.Name, strings.Join(s.registry.Names(), ", ")), false
 	}
 	s.log.Info("tool", "name", tc.Function.Name, "args", tc.Function.Arguments)
 

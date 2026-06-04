@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"harness/internal/llm"
@@ -59,5 +60,73 @@ func TestRunCompletes(t *testing.T) {
 	}
 	if !noopCalled {
 		t.Error("noop tool was not called")
+	}
+}
+
+// TestUnknownToolErrorListsTools checks the recovery hint: a call to an
+// unregistered tool (here a malformed name) is fed back with the valid tool
+// names so the model can correct itself instead of looping.
+func TestUnknownToolErrorListsTools(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(tool.Tool{Name: "alpha", Schema: map[string]any{"type": "object"}})
+	reg.Register(tool.Tool{Name: "beta", Schema: map[string]any{"type": "object"}})
+	s := NewSession(nil, reg, llm.Sampling{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{})
+
+	res, completed := s.runTool(context.Background(), llm.ToolCall{
+		Function: llm.FunctionCall{Name: "go\n<parameter=args", Arguments: "{}"},
+	})
+	if completed {
+		t.Fatal("unknown tool must not signal completion")
+	}
+	for _, want := range []string{"unknown tool", "alpha", "beta"} {
+		if !strings.Contains(res, want) {
+			t.Errorf("error message %q missing %q", res, want)
+		}
+	}
+}
+
+// TestCompleteRetriesTransient drives complete against a server that returns two
+// 5xx responses before succeeding; the session must retry through them.
+func TestCompleteRetriesTransient(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n++
+		if n <= 2 {
+			http.Error(w, "overloaded", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"total_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	s := NewSession(llm.NewClient(srv.URL, "m"), tool.NewRegistry(), llm.Sampling{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{})
+	resp, err := s.complete(context.Background(), llm.Request{})
+	if err != nil {
+		t.Fatalf("complete after retries: %v", err)
+	}
+	if resp.Choices[0].Message.Content != "ok" {
+		t.Fatalf("content = %q", resp.Choices[0].Message.Content)
+	}
+	if n != 3 {
+		t.Errorf("server hit %d times, want 3 (two retries)", n)
+	}
+}
+
+// TestCompleteNoRetryOn4xx confirms a client error is permanent: it is returned
+// after a single attempt, not retried.
+func TestCompleteNoRetryOn4xx(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n++
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	s := NewSession(llm.NewClient(srv.URL, "m"), tool.NewRegistry(), llm.Sampling{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{})
+	if _, err := s.complete(context.Background(), llm.Request{}); err == nil {
+		t.Fatal("expected error on 400")
+	}
+	if n != 1 {
+		t.Errorf("server hit %d times, want 1 (no retry on 4xx)", n)
 	}
 }

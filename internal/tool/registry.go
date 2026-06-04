@@ -46,6 +46,13 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
+// Names returns the registered tool names in registration order.
+func (r *Registry) Names() []string {
+	names := make([]string, len(r.order))
+	copy(names, r.order)
+	return names
+}
+
 // Specs returns the tools as native function-calling definitions, in order.
 func (r *Registry) Specs() []llm.Tool {
 	specs := make([]llm.Tool, 0, len(r.order))

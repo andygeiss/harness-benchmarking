@@ -94,4 +94,7 @@ func TestRegistryOrderAndGet(t *testing.T) {
 	if _, ok := r.Get("missing"); ok {
 		t.Error("Get(missing) should fail")
 	}
+	if got := r.Names(); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("Names() = %v, want [a b]", got)
+	}
 }

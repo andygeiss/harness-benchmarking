@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,21 @@ func NewClient(baseURL, model string) *Client {
 	}
 }
 
+// transientError marks a failure that may succeed on retry: a transport error,
+// a truncated response body, or a 5xx status. Retryable reports it.
+type transientError struct{ err error }
+
+func (e *transientError) Error() string { return e.err.Error() }
+func (e *transientError) Unwrap() error { return e.err }
+
+func transient(err error) error { return &transientError{err: err} }
+
+// Retryable reports whether err is a transient failure worth retrying.
+func Retryable(err error) bool {
+	var t *transientError
+	return errors.As(err, &t)
+}
+
 // post marshals req and issues the chat-completions POST. The caller owns the body.
 func (c *Client) post(ctx context.Context, req Request) (*http.Response, error) {
 	req.Model = c.model
@@ -48,16 +64,20 @@ func (c *Client) post(ctx context.Context, req Request) (*http.Response, error) 
 func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 	resp, err := c.post(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("call endpoint: %w", err)
+		return nil, transient(fmt.Errorf("call endpoint: %w", err))
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, transient(fmt.Errorf("read response: %w", err))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		err := fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		if resp.StatusCode >= 500 {
+			return nil, transient(err)
+		}
+		return nil, err
 	}
 	var out Response
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -75,12 +95,16 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(k
 	req.StreamOptions = &StreamOptions{IncludeUsage: true}
 	resp, err := c.post(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("call endpoint: %w", err)
+		return nil, transient(fmt.Errorf("call endpoint: %w", err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		err := fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		if resp.StatusCode >= 500 {
+			return nil, transient(err)
+		}
+		return nil, err
 	}
 
 	var (
@@ -131,7 +155,7 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(k
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read stream: %w", err)
+		return nil, transient(fmt.Errorf("read stream: %w", err))
 	}
 
 	return &Response{
