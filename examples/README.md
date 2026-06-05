@@ -40,14 +40,6 @@ harness against it. Any extra flags are forwarded to the harness:
   instead of looping to the iteration limit. Validates the guard end-to-end:
   `go run ./cmd/example stuck` stops around iter 4 with the default
   `-max-stale 3`; lower it (e.g. `-max-stale 2`) to halt sooner.
-- **numkit** — implement five independent numeric helpers (`GCD`, `IsPrime`,
-  `DigitSum`, `Factorial`, `Fib`) against a provided test. A small *decomposable
-  checklist*: every function is trivial and independent, so PROGRESS.md is a
-  natural per-function checklist. Added as a minimal cross-pass-resume fixture —
-  but read "Cross-pass memory" below: this model one-shots it.
-- **textkit** — implement eight independent string helpers (`WordCount`,
-  `CountVowels`, `IsPalindrome`, `Acronym`, `RunLengthEncode`/`RunLengthDecode`,
-  `Rotate`, `Title`). The same idea as `numkit`, one size up.
 - **todo** — a server-rendered **htmx** todo app (`package main`): `net/http`
   handlers over a concurrency-safe in-memory store, pages rendered with
   `html/template`, and templates plus static assets (a vendored `htmx.min.js` and
@@ -63,18 +55,19 @@ harness against it. Any extra flags are forwarded to the harness:
 
 The Ralph loop exists to carry a task across context resets: state survives only
 on the filesystem — the code being written, plus a `PROGRESS.md` the agent keeps
-as its plan memory. `numkit` and `textkit` were added as decomposable checklists
-to *exercise* that resume, and the harness grew a `-memory` flag to ablate it:
+as its plan memory. `calc` is the example meant to *exercise* that resume (it
+decomposes into lexer → parser → eval), and the harness grew a `-memory` flag to
+ablate it:
 
-    go run ./cmd/example textkit                 # memory on (default)
-    go run ./cmd/example textkit -memory=false   # off: drops the PROGRESS.md guidance
-                                                 # and wipes the file before each pass
+    go run ./cmd/example calc                 # memory on (default)
+    go run ./cmd/example calc -memory=false   # off: drops the PROGRESS.md guidance
+                                              # and wipes the file before each pass
 
 With `-memory=false` the agent must resume from the persisted code alone; the run
 log (`logs/runs.jsonl`) records `memory`, `passes`, and `pass_reasons` for an A/B.
 
-**The honest finding.** On the default model (`Qwen3.6-35B-A3B`), these tasks —
-and the staged `calc` — complete in a **single pass**, so the cross-pass handoff
+**The honest finding.** On the default model (`Qwen3.6-35B-A3B`), `calc` — like
+the smaller examples — completes in a **single pass**, so the cross-pass handoff
 is never triggered and the memory A/B is null. The model writes a complete,
 correct implementation in its first pass (often two turns: read the spec, then
 write the whole package), and the end-of-pass probe finishes the run the moment
@@ -83,13 +76,12 @@ it verifies. No per-pass budget reliably forces a second pass:
 - cut the budget *after* the model finishes → the probe completes it (one pass);
 - cut it *before* it writes anything → no progress → the stagnation guard halts;
 - the middle — a persisted but *non-verifying* partial — appears only when the
-  model *iterates* (write → test → fix), which needs it to be wrong first. That
-  is nondeterministic on clean, fully-specified tasks, and a pile of trivial
-  units doesn't induce it (the model batches them into one `write_file`).
+  model *iterates* (write → test → fix), which needs it to be wrong first, and
+  that is nondeterministic on clean, fully-specified tasks.
 
-So resume is effectively un-exercisable with clean, small, deterministic tasks on
-this model. The `-memory` ablation and these fixtures are kept for the cases that
-*do* span passes — a weaker or more-quantized model that makes mistakes and
+So resume is effectively un-exercisable with clean, deterministic tasks on this
+model. The `-memory` ablation and `calc` are kept for the cases that *do* span
+passes — a weaker or more-quantized model that makes mistakes and
 iterates, or a task genuinely larger than one context window. To reproduce: each
 run appends to `logs/runs.jsonl` (gitignored) with `memory`/`passes`/`outcome` —
 on this model every row reads `passes: 1`, `outcome: completed`, either memory setting.
@@ -100,9 +92,10 @@ Passing the tests means the code is *correct* — not that it is *good*. Those a
 different axes, and the harness only gates on the first. The `judge` skill
 (`.claude/skills/judge/SKILL.md`) measures the second: it scores the produced
 code (Go idiomaticity, simplicity, contract fidelity, readability, robustness,
-performance) on a 0–1 scale anchored to Opus, **blind to the spec's tests**, and
-appends the result to `logs/judgments.jsonl`. Run it after a harness run, best in
-a fresh Opus session:
+performance) on a 0–1 scale, scored head-to-head against a real Sonnet solution
+to the same contract (Opus referees both, **blind to the spec's tests**), and
+appends one row per candidate to `logs/judgments.jsonl`. Run it after a harness
+run, best in a fresh Opus session:
 
     /judge        # grades ./sandbox against the example's PROMPT.md
 
