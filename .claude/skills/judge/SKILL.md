@@ -188,6 +188,7 @@ Do not write into `./sandbox` or any candidate dir — they are transient.
 - **Point estimate** — one judging pass is one sample. For a calibrated number,
   run this skill in **k fresh sessions** and take the per-dimension median; k
   re-scorings inside one session are correlated, not independent.
-- **Loose correlation to `runs.jsonl`** — that log records the *harness* model and
-  outcome but not the task name, so join a judgment to its run by timestamp
-  proximity plus the example you know you judged.
+- **Joining to `runs.jsonl`** — that log records a `task` field (the `-prompt`
+  path, e.g. `examples/calc/PROMPT.md`) alongside the *harness* model and outcome,
+  so a judgment joins to its run on the task (modulo path-vs-name), with timestamp
+  proximity disambiguating repeated runs of the same task.

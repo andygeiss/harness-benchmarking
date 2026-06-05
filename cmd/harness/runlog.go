@@ -14,6 +14,7 @@ import (
 type RunLog struct {
 	Time              string   `json:"time"`
 	Model             string   `json:"model"`
+	Task              string   `json:"task"`    // path to the task prompt (-prompt) — identifies which task ran, so a judgment can be joined to its run
 	Memory            bool     `json:"memory"`  // was PROGRESS.md cross-pass memory enabled (-memory)
 	Outcome           string   `json:"outcome"` // completed | stagnated | budget | interrupted | fault
 	Passes            int      `json:"passes"`

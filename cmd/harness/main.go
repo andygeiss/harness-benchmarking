@@ -60,8 +60,8 @@ func systemPrompt(memory bool) string {
 // stuck model (exitStagnated) from one that simply ran out of passes (exitBudget).
 const (
 	exitCompleted = 0 // task verified complete, or the run was cleanly interrupted
-	exitFault     = 1 // a setup step failed, or an unexpected error occurred
-	exitStagnated = 3 // the workspace went unchanged across passes; the model is stuck
+	exitFault     = 1 // a setup step failed, an unexpected error occurred, or every pass errored (e.g. endpoint unreachable)
+	exitStagnated = 3 // the workspace went unchanged across passes that ran cleanly; the model is stuck
 	exitBudget    = 4 // the Ralph pass budget ran out before completion
 )
 
@@ -154,6 +154,7 @@ func main() {
 	prompt := string(promptBytes)
 	rec := RunLog{
 		Model:             *model,
+		Task:              *promptPath,
 		Memory:            *memory,
 		CtxLimit:          *ctxLimit,
 		MaxIters:          *maxIters,
@@ -172,7 +173,10 @@ func main() {
 
 // run drives the Ralph loop: it re-runs the session with a fresh context each
 // pass until the task verifies complete, the workspace stagnates, or the pass
-// budget is exhausted, and returns the process exit code. verify is the done
+// budget is exhausted, and returns the process exit code. A run in which every
+// pass errored — none ever ran cleanly — returns exitFault rather than
+// exitStagnated or exitBudget, so an unreachable endpoint is not misread as a
+// stuck model. verify is the done
 // gate's Verifier, reused by the end-of-pass probe (see the loop body). os.Exit
 // stays in main, so the loop's control logic is exercised directly by tests.
 // When logDir is set it appends one RunLog record (config, outcome, aggregate
@@ -199,6 +203,10 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 	// model has actually changed something.
 	lastVerified, _ := fingerprint(workdir)
 	stale := staleTracker{limit: maxStale}
+	// anyClean records whether at least one pass ran to a clean (non-error)
+	// result. If none ever does — every pass errored, e.g. the endpoint was
+	// unreachable — the run is a fault, not a stuck model or an exhausted budget.
+	anyClean := false
 	for iter := 1; iter <= rec.MaxIters; iter++ {
 		// Memory ablation: with -memory=false, remove PROGRESS.md before the
 		// pass so the model cannot carry plan notes across the context reset.
@@ -222,6 +230,7 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 			log.Error("pass failed", "iter", iter, "err", err)
 			rec.PassReasons = append(rec.PassReasons, "error")
 		} else {
+			anyClean = true
 			log.Info("pass ended", "iter", iter, "reason", res.Reason, "steps", res.Steps)
 			rec.PassReasons = append(rec.PassReasons, res.Reason)
 			if res.Completed {
@@ -258,11 +267,21 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 			stalled := stale.update(fp)
 			log.Debug("workspace fingerprint", "iter", iter, "stale", stale.count, "hash", fp)
 			if stalled {
+				if !anyClean {
+					log.Error("every pass errored and the workspace never changed; treating as a fault", "passes", stale.count, "iter", iter)
+					rec.Outcome = "fault"
+					return exitFault
+				}
 				log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale.count, "iter", iter)
 				rec.Outcome = "stagnated"
 				return exitStagnated
 			}
 		}
+	}
+	if !anyClean {
+		log.Error("every pass errored before the budget ran out; treating as a fault", "max", rec.MaxIters)
+		rec.Outcome = "fault"
+		return exitFault
 	}
 	log.Warn("reached max Ralph passes without completion", "max", rec.MaxIters)
 	rec.Outcome = "budget"

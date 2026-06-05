@@ -79,6 +79,23 @@ func TestRunExhaustsBudget(t *testing.T) {
 	}
 }
 
+// TestRunFaultsWhenEveryPassErrors: when every pass errors (here the endpoint
+// returns a non-retryable 400) the workspace never changes — the same condition
+// the stagnation guard watches — but the run is a fault, not stagnation: an
+// unreachable model is not a stuck one. Without the anyClean guard this would
+// exit stagnated, misfiling a transport outage as a stuck model.
+func TestRunFaultsWhenEveryPassErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	sess := newSession(srv, tool.NewRegistry())
+
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, true, nil, RunLog{MaxIters: 10}); code != exitFault {
+		t.Fatalf("exit = %d, want exitFault (%d)", code, exitFault)
+	}
+}
+
 // TestRunWritesLog: a completed run appends one valid RunLog line with the
 // outcome and aggregate metrics filled in.
 func TestRunWritesLog(t *testing.T) {
@@ -88,7 +105,7 @@ func TestRunWritesLog(t *testing.T) {
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
 	logDir := t.TempDir()
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, true, nil, RunLog{Model: "test", MaxIters: 5}); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, true, nil, RunLog{Model: "test", Task: "examples/x/PROMPT.md", MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted", code)
 	}
 	data, err := os.ReadFile(filepath.Join(logDir, "runs.jsonl"))
@@ -102,7 +119,7 @@ func TestRunWritesLog(t *testing.T) {
 	if got.Outcome != "completed" || got.Passes != 1 {
 		t.Errorf("outcome=%q passes=%d, want completed/1", got.Outcome, got.Passes)
 	}
-	if got.Model != "test" || got.ModelCalls < 1 || got.ToolCalls < 1 || got.TotalTokens != 10 {
+	if got.Model != "test" || got.Task != "examples/x/PROMPT.md" || got.ModelCalls < 1 || got.ToolCalls < 1 || got.TotalTokens != 10 {
 		t.Errorf("metrics not recorded as expected: %+v", got)
 	}
 }
