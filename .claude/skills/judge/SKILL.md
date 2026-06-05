@@ -1,6 +1,6 @@
 ---
 name: judge
-description: Score the Go code from a harness run (in ./sandbox or an example workspace) for quality on a 0–1 scale — contract fidelity, simplicity/no-bloat, Go idiomaticity, readability, robustness, performance. Opus referees; the bar is a real Sonnet solution to the same contract, scored head-to-head (both judged blind on the same rubric). Appends one record per candidate to logs/judgments.jsonl. Use after a run to measure code quality; it never gates completion. Best run under Opus in a fresh session.
+description: Score the Go code from a harness run (in ./sandbox or an example workspace) for quality on a 0–1 scale — contract fidelity, simplicity/no-bloat, Go idiomaticity, readability, robustness, performance. Opus referees; the bar is a real Sonnet solution to the same contract, scored head-to-head (both judged blind on the same rubric). Appends one record per candidate to logs/judgments.jsonl, each carrying a deterministic modernize-finding count and an optional paired modernize --fix uplift as a noise-free idiomaticity signal. Use after a run to measure code quality; it never gates completion. Best run under Opus in a fresh session.
 ---
 
 # judge — Opus-as-a-judge for harness output
@@ -93,16 +93,44 @@ measures (local vs Sonnet, run A vs B, config vs config), not that code is
 3. Read the **contract** (`PROMPT.md`) and every implementation file under the
    candidate — glob `*.go`, **excluding `*_test.go`**. Skip the tests; do not read
    them to "check your work."
-4. *(Optional objective signals — they reveal no tests)* run `gofmt -l <dir>`
-   and `go vet ./...` inside the candidate. Unformatted files or vet findings
-   inform Idiomaticity / Readability / Robustness. **Never run `go test`.**
+4. **Objective signals (read-only; they reveal no tests).** Inside the candidate
+   run `gofmt -l <dir>` and `go vet ./...` — unformatted files or vet findings
+   inform Idiomaticity / Readability / Robustness. Then take the **deterministic
+   modernize-finding count**, the noise-free idiomaticity metric this skill logs
+   (`modernize_findings`, schema below): run modernize **read-only** and count what
+   it reports — never `--fix` the candidate, that would rewrite the very code you
+   are judging and erase the signal (and the score). **Never run `go test`.**
+
+       # inside the candidate dir — counts modernize findings on the code AS WRITTEN
+       golangci-lint run --default=none --enable=modernize --output.json.path stdout ./... 2>/dev/null \
+         | python3 -c "import json,sys; s=sys.stdin.read().strip(); print(sum(i['FromLinter']=='modernize' for i in (json.JSONDecoder().raw_decode(s)[0].get('Issues') or [])) if s else 0)"
+
+   golangci-lint's bundled modernize is the *pinned* gopls suite, so record the
+   `golangci-lint version` alongside the count to keep it reproducible (a plain
+   text run also prints a `* modernize: N` tally if you prefer to eyeball it).
+   Record this count for **both** candidates — it is head-to-head like the scores:
+   "subject 3 vs Sonnet 0" says more than either number alone.
 5. Score **each dimension independently**: write a one-line justification *first*,
    then the number. Never collapse them into a single gestalt score. Anchor with
    the rubric cells — 1.0 = the left cell, 0.0 = the right, 0.5 = competent-but-
    unremarkable — so scores do not pile up in 0.6–0.9.
 6. Compute the scalar as the explicit **weighted mean** of the dimension scores
    (weights below). Show the arithmetic.
-7. Print the head-to-head summary (both candidates side by side, the gap, and
+7. *(Optional — the paired modernize uplift.)* To express what a deterministic
+   `modernize --fix` would buy the **subject** in the judge's own units, score a
+   fixed copy *in this same session*: `cp -r <subject> <scratch>` (a dir **outside**
+   the repo and `./sandbox`), run `golangci-lint run --default=none --enable=modernize
+   --fix ./...` then `gofmt -w .` inside `<scratch>` (the fixer can leave imports
+   ungrouped — see caveats), and re-run steps 3–6 on `<scratch>` under the identical
+   lens. Record `raw_score`, `fixed_score`, and `delta = fixed_score − raw_score` as
+   `modernize_uplift` on the subject row. **Score both halves in one session** so the
+   session's shared bias cancels in the delta — the same trick the head-to-head uses.
+   The delta is **single-sample and directional only**: modernize moves just
+   idiomaticity/readability/(a little) performance, so it is bounded to a few
+   hundredths and sits at or below this judge's noise floor — do not report it as
+   calibrated unless you repeat across k sessions (see caveats). Skip this step and
+   set `modernize_uplift` null if you only want the deterministic count.
+8. Print the head-to-head summary (both candidates side by side, the gap, and
    what a rewrite of the *subject* would change), then **append one JSON line per
    candidate** to `logs/judgments.jsonl` (schema below), sharing a `pair_id`.
 
@@ -153,6 +181,7 @@ judged code; give both rows the same `pair_id` so the comparison can be rejoined
   "contract": "examples/todo/PROMPT.md",
   "target": "sandbox",
   "blind_to_tests": true,
+  "golangci_lint_version": "2.12.2",
   "dimensions": {
     "contract_fidelity": {"score": 0.0, "why": "..."},
     "simplicity":        {"score": 0.0, "why": "..."},
@@ -163,14 +192,20 @@ judged code; give both rows the same `pair_id` so the comparison can be rejoined
   },
   "weights": {"contract_fidelity":0.30,"simplicity":0.20,"idiomaticity":0.15,"readability":0.15,"robustness":0.12,"performance":0.08},
   "score": 0.0,
+  "modernize_findings": 0,
+  "modernize_uplift": {"raw_score": 0.0, "fixed_score": 0.0, "delta": 0.0, "method": "paired-same-session", "samples": 1, "calibrated": false},
   "notes": "caveats; standout findings"
 }
 ```
 
 The paired baseline row is identical but with `"role": "baseline"`,
 `"subject_model": "claude-sonnet-4-6"`, and `"target"` pointing at the Sonnet
-dir. One compact, valid-JSON line each (append with `>> logs/judgments.jsonl`).
-Do not write into `./sandbox` or any candidate dir — they are transient.
+dir. `modernize_findings` is recorded for **both** rows — it is head-to-head like
+the scores; `golangci_lint_version` pins the count so it stays reproducible across
+time. `modernize_uplift` is **subject-only**: set it `null` on the baseline row,
+and `null` on the subject row too when you skip step 7. One compact, valid-JSON
+line each (append with `>> logs/judgments.jsonl`). Do not write into `./sandbox`
+or any candidate dir — they are transient (the uplift's `--fix` runs on a copy).
 
 ## Caveats (surface these in the summary when they bite)
 
@@ -188,6 +223,19 @@ Do not write into `./sandbox` or any candidate dir — they are transient.
 - **Point estimate** — one judging pass is one sample. For a calibrated number,
   run this skill in **k fresh sessions** and take the per-dimension median; k
   re-scorings inside one session are correlated, not independent.
+- **`modernize_findings` is deterministic but narrow** — it counts one linter's
+  idiomaticity nits (`any`/`slices`/`min`/range-int), not design quality, and it is
+  frequently **0** on a capable model (this repo's own code: 0). That zero is the
+  *finding* — "writes modern Go unaided" — not a measurement failure. Unlike the
+  scores it is reproducible (pinned to the `golangci-lint` version), so trust it as
+  a hard number where you treat the scores as ordinal.
+- **`modernize_uplift` is bounded and noisy — directional only** — modernize moves
+  just idiomaticity/readability/(a little) performance, ≈0.38 of the rubric weight
+  and only a fraction of that, so its scalar effect is a few *hundredths* — at or
+  below this judge's single-session noise. Paired same-session scoring cancels the
+  session's shared bias in the delta (why step 7 insists on one session), but the
+  number still wants k repeats to certify. Never `--fix` the candidate itself —
+  only a throwaway copy — or you poison both this metric and the score.
 - **Joining to `runs.jsonl`** — that log records a `task` field (the `-prompt`
   path, e.g. `examples/calc/PROMPT.md`) alongside the *harness* model and outcome,
   so a judgment joins to its run on the task (modulo path-vs-name), with timestamp

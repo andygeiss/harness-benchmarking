@@ -94,7 +94,9 @@ different axes, and the harness only gates on the first. The `judge` skill
 code (Go idiomaticity, simplicity, contract fidelity, readability, robustness,
 performance) on a 0–1 scale, scored head-to-head against a real Sonnet solution
 to the same contract (Opus referees both, **blind to the spec's tests**), and
-appends one row per candidate to `logs/judgments.jsonl`. Run it after a harness
+appends one row per candidate to `logs/judgments.jsonl` — each row also carrying a
+deterministic `modernize`-finding count and an optional paired `--fix` uplift, a
+reproducible idiomaticity signal beside the subjective scores. Run it after a harness
 run, best in a fresh Opus session:
 
     /judge        # grades ./sandbox against the example's PROMPT.md
