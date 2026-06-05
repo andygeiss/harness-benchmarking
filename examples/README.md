@@ -45,11 +45,23 @@ harness against it. Any extra flags are forwarded to the harness:
   `html/template`, and templates plus static assets (a vendored `htmx.min.js` and
   `app.css`) served from `embed.FS`. The seed ships the spec (`todo_test.go`,
   which drives the handlers through `httptest`) and the static assets; the agent
-  writes `main.go` and the templates. The largest, most Go-idiomatic example —
-  multiple endpoints, fragment-vs-page rendering, HTML escaping, method routing —
-  so it has real quality variance for `/judge` and is the most likely to span
-  passes. After a run, view it: `cd sandbox && go run .`, then open
-  http://localhost:8080.
+  writes `main.go` and the templates. The largest *web* example and the most
+  Go-idiomatic — multiple endpoints, fragment-vs-page rendering, HTML escaping,
+  method routing — so it has real quality variance for `/judge`. After a run,
+  view it: `cd sandbox && go run .`, then open http://localhost:8080.
+- **graphkit** — a small **graph algorithms library** (module `graphkit`, six
+  packages): a directed weighted `graph` core, then `traverse` (BFS/DFS),
+  `paths` (Dijkstra, BFS shortest path, distances), `toposort` (Kahn + cycle
+  detection), `components` (undirected components + Tarjan SCC), and `spanning`
+  (Kruskal MST). ~15 functions across six packages, with the `graph` core as the
+  one build-first dependency. This is the **largest** example and the substrate
+  for measuring cross-pass resume — though on the 35B model it still completes in
+  a single pass (see below). Each package
+  ships its own spec file, so the model gets granular feedback
+  (`go test ./graph/...`) while the done-gate stays the full `go test ./...`. The
+  spec is deterministic by construction — all node/edge iteration in ascending
+  label order, components and paths in canonical form — so "verification passed"
+  means the algorithms are correct, not that the model matched a map order.
 
 ## Cross-pass memory (and why these examples one-shot here)
 
@@ -85,6 +97,36 @@ passes — a weaker or more-quantized model that makes mistakes and
 iterates, or a task genuinely larger than one context window. To reproduce: each
 run appends to `logs/runs.jsonl` (gitignored) with `memory`/`passes`/`outcome` —
 on this model every row reads `passes: 1`, `outcome: completed`, either memory setting.
+
+**The larger task — and the honest result.** `graphkit` is the largest example:
+six packages, ~15 functions, ~730 lines of implementation against a 518-line
+spec. It was built to force the multi-pass case `calc` cannot. **It does not, on
+the 35B model.** A measured run completes in a **single pass** (23 steps, ~4 min,
+`outcome: completed`, `passes: 1`): the model implements all six packages, tests
+each, fixes the one that fails, runs the full suite, and calls `done` — without
+tripping the per-call context ceiling. ~730 lines simply is not enough *tokens* to
+overflow a 52k-token pass: the model's window is 64k+, and oMLX prompt-caching
+keeps accumulation cheap (that run reused ~79% of its prompt tokens from cache,
+and emitted only ~8.4k completion tokens total). The earlier extrapolation from
+`todo` was wrong — `todo`'s two passes were a premature `model_stop`, not context
+exhaustion, so nothing here has ever actually overflowed a window.
+
+To genuinely exercise cross-pass resume on this model you must **cap the budget
+below the task's single-pass peak**, go **dramatically larger** (multiple thousands
+of co-resident lines), or use a **weaker model** — and a weaker model alone is not
+enough: a measured **27B-oQ4 run at `-ctx-limit 16384` also one-shot** (`passes: 1`,
+~13 min, 701 lines), because the peak working context sat *just under* that cap,
+~15–16k tokens. Three things keep a pass that small: the reasoning trace is
+stripped from history (that run emitted only ~7.4k completion tokens total), the
+writes are compact, and ~87% of the prompt was served from cache. So the cap has
+to sit *below* the peak — about **`-ctx-limit 10000–12000`** — to end a pass on
+`context` mid-implementation and resume from the persisted packages plus
+`PROGRESS.md` (now *meaningful*, since the resumed state is real). `graphkit` is
+the right substrate for that measurement; `calc` was too small to even be a
+candidate. The run also validated the spec's *algorithm-independence*:
+the model solved SCC with Kosaraju where the reference uses Tarjan, and the
+canonical-form contract accepted it — "verification passed" tracks correctness,
+not a particular implementation.
 
 ## Measuring code quality
 
