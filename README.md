@@ -199,6 +199,22 @@ nudge only matches it (3/4). The real lever is per-pass budget (`-ctx-limit`), n
 prompting — so both nudges were removed rather than kept as dead weight. (Raw rows
 in `logs/runs.jsonl`; single-digit samples, ordinal.)
 
+**Why per-pass budget is the lever.** Digging into that floor isolated the
+mechanism. At `-ctx-limit 11000` the model re-reads ~70% of the workspace *every
+pass* — 8–9 `.go`-file reads per pass (the six specs plus the implementations) — and
+`-memory` does not change it: memory=true and memory=false land at the same rate
+(8.2 / 8.4 / 9.2 vs 8.0 / 8.2 / 9.8 reads per pass, three runs each). It is **not**
+that the model ignores its notes — traces show it reads `PROGRESS.md` *first* on
+every resume pass, as instructed, then re-sweeps the code anyway. The re-sweep is
+mostly **structural, not distrust**: to implement the next package the model needs
+that package's *test* in context, and `PROGRESS.md` records *status* ("toposort:
+todo") but not the *spec content* the model must read to write the code. A reset
+context therefore re-pays to load the working set every pass; the part notes could
+save — re-verifying already-done packages — is the smaller slice. So the budget floor
+is inherent to the Ralph design, and per-pass budget (`-ctx-limit`) is the only lever
+that moved completion (11k jams, 13k ~3/4, 16k two-shots) — neither prompting nor the
+`PROGRESS.md` memory reduces the re-derivation cost beneath it.
+
 That same completing run also exposed a gap in the gate: the `components` it
 certified is **flaky** (its SCC mispartitions on ~8% of runs, by map-iteration
 order). at the time, `go test -count=1` defeated the test *cache* but sampled a *single*
