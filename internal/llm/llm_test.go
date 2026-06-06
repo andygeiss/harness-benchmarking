@@ -65,6 +65,24 @@ func TestComplete(t *testing.T) {
 	}
 }
 
+// TestRetryableTransportError covers the transport leg of the retry
+// classification — the 5xx and 4xx legs are exercised in the agent package. A
+// request to a closed endpoint must surface a Retryable error so the Ralph loop
+// retries a momentarily-unreachable server instead of failing the pass outright.
+func TestRetryableTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // the endpoint now refuses connections
+
+	_, err := NewClient(url, "m").Complete(context.Background(), Request{})
+	if err == nil {
+		t.Fatal("Complete against a closed endpoint should error")
+	}
+	if !Retryable(err) {
+		t.Errorf("transport error must be Retryable, got %v", err)
+	}
+}
+
 func TestCompleteStream(t *testing.T) {
 	frames := []string{
 		`data: {"choices":[{"delta":{"role":"assistant"}}]}`,

@@ -100,6 +100,69 @@ func TestRegistryOrderAndGet(t *testing.T) {
 	}
 }
 
+// TestGoArgAllowlist locks in that the go tool is an execution sandbox, not just a
+// subcommand filter. The subcommand allowlist alone still forwards flags like
+// -exec, -toolexec, -vettool, -o and -overlay that run arbitrary programs or write
+// outside the workspace (and -overlay re-opens -protect-tests), so checkGoArgs must
+// permit only benign flags plus package paths, and restrict `go mod` to its
+// read-only verbs.
+func TestGoArgAllowlist(t *testing.T) {
+	allowed := [][]string{
+		{"build", "./..."},
+		{"test", "-run", "TestX", "-v", "./..."},
+		{"test", "-count=1", "-timeout", "30s", "./..."},
+		{"test", "-short", "-race", "./..."},
+		{"vet", "."},
+		{"fmt", "./..."},
+		{"mod", "tidy"},
+		{"mod", "download"},
+		{"mod", "verify"},
+	}
+	for _, args := range allowed {
+		if err := checkGoArgs(args); err != nil {
+			t.Errorf("checkGoArgs(%v) = %v, want allowed", args, err)
+		}
+	}
+
+	rejected := [][]string{
+		{"test", "-exec", "touch /tmp/pwned", "./..."}, // run an arbitrary command
+		{"test", "-exec=touch x"},                      // ...also in -flag=value form
+		{"build", "-o", "../escape"},                   // write a binary outside the workspace
+		{"build", "-o=../escape"},
+		{"build", "-toolexec=touch x"},     // run a program per tool invocation
+		{"vet", "-vettool=/bin/false"},     // run an arbitrary vet tool
+		{"build", "-ldflags=-X=a.b=c"},     // linker-driven execution surface
+		{"test", "-overlay=o.json"},        // redirect file contents (re-opens -protect-tests)
+		{"mod", "edit", "-replace=a=../b"}, // rewrite go.mod to redirect the build
+		{"mod"},                            // missing verb
+	}
+	for _, args := range rejected {
+		if err := checkGoArgs(args); err == nil {
+			t.Errorf("checkGoArgs(%v) = nil, want rejected", args)
+		}
+	}
+}
+
+// TestGoToolRejectsUnsafeInvocations checks the same boundary end-to-end through
+// the tool's Run: an empty arg list, a non-allowlisted subcommand, and a smuggled
+// -exec flag are all refused before any go process starts.
+func TestGoToolRejectsUnsafeInvocations(t *testing.T) {
+	g := Go(t.TempDir(), time.Second)
+	for _, args := range [][]string{
+		{},                      // empty
+		{"run", "."},            // non-allowlisted subcommand
+		{"test", "-exec", "sh"}, // allowlisted subcommand, unsafe flag
+	} {
+		raw, err := json.Marshal(map[string]any{"args": args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.Run(context.Background(), raw); err == nil {
+			t.Errorf("Go.Run(%v) = nil error, want rejection", args)
+		}
+	}
+}
+
 // TestProtectTests locks in the governance boundary that closes the false-completed
 // hole: with protection on, the agent cannot create or edit *_test.go files (the
 // spec), so it cannot pass verification by shimming the runner or gutting a test.
@@ -237,5 +300,54 @@ func TestGoTestVerifierClosesExitHole(t *testing.T) {
 	}
 	if !strings.Contains(out, "0 tests") {
 		t.Errorf("expected a 0-tests diagnostic in the feedback, got:\n%s", out)
+	}
+}
+
+// TestVerifierForRouting pins the dispatch that decides whether the anti-gaming
+// guarantee even applies: a `go test` command must get the strict GoTestVerifier
+// (which rejects a build that runs zero tests), while any other command falls back
+// to the exit-status CommandVerifier (which trusts the process exit code).
+func TestVerifierForRouting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go toolchain")
+	}
+	dir := t.TempDir()
+	write := func(d, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(d, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(dir, "go.mod", "module route\n\ngo 1.26\n")
+	write(dir, "p_test.go", "package p\n\nimport \"testing\"\n\nfunc TestSpec(t *testing.T) {}\n")
+	// A non-test file that exits before any test runs: `go test` prints ok/exit 0
+	// while running zero tests, but `go vet` neither runs it nor objects.
+	write(dir, "exit.go", "package p\n\nimport \"os\"\n\nfunc init() { os.Exit(0) }\n")
+
+	ctx := context.Background()
+
+	// `go test` routes to the strict verifier: zero tests actually ran, so reject.
+	if ok, _, err := VerifierFor(dir, []string{"go", "test", "./..."}, time.Minute)(ctx); err != nil {
+		t.Fatalf("go test verify: %v", err)
+	} else if ok {
+		t.Error("go test route should use the strict gate and reject a zero-test build")
+	}
+
+	// `go vet` routes to the exit-status fallback: the tree vets clean, exit 0 => ok.
+	if ok, _, err := VerifierFor(dir, []string{"go", "vet", "./..."}, time.Minute)(ctx); err != nil {
+		t.Fatalf("go vet verify: %v", err)
+	} else if !ok {
+		t.Error("non-test route should trust a clean exit (ok=true)")
+	}
+
+	// The fallback reports failure when the command exits non-zero. A separate
+	// module with a Printf verb/arg mismatch makes `go vet` find an issue and exit 1.
+	bad := t.TempDir()
+	write(bad, "go.mod", "module bad\n\ngo 1.26\n")
+	write(bad, "bad.go", "package p\n\nimport \"fmt\"\n\nfunc Bad() { fmt.Printf(\"%d\", \"x\") }\n")
+	if ok, _, err := VerifierFor(bad, []string{"go", "vet", "./..."}, time.Minute)(ctx); err != nil {
+		t.Fatalf("go vet (bad) verify: %v", err)
+	} else if ok {
+		t.Error("fallback must report ok=false when go vet finds an issue (exit 1)")
 	}
 }
