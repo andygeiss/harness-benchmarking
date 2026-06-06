@@ -41,8 +41,7 @@ func runCmdFull(ctx context.Context, dir string, timeout time.Duration, name str
 		if cctx.Err() != nil {
 			return res + fmt.Sprintf("\n[timed out after %s]", timeout), true, nil
 		}
-		var ee *exec.ExitError
-		if errors.As(runErr, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			return res + fmt.Sprintf("\n[exit status %d]", ee.ExitCode()), true, nil
 		}
 		return "", false, fmt.Errorf("could not run %s: %w", name, runErr)

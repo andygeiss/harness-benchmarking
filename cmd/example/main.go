@@ -39,8 +39,7 @@ func main() {
 	harness.Stdin, harness.Stdout, harness.Stderr = os.Stdin, os.Stdout, os.Stderr
 	fmt.Fprintf(os.Stderr, "example %q: seeded ./%s, launching harness\n", name, sandbox)
 	if err := harness.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			os.Exit(ee.ExitCode())
 		}
 		fmt.Fprintf(os.Stderr, "launch harness: %v\n", err)
