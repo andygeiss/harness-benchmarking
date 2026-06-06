@@ -237,6 +237,24 @@ The first single pair looked like a memory win and replication dissolved it — 
 trap the "ordinal, single-digit samples" caveat is about. Detail in
 [examples/README.md](examples/README.md).
 
+**The mechanism, quantified — and why more budget is not the fix.** One `apikit`@11k
+stagnation log makes the floor concrete: across 12 passes (all cut by `context`, with
+`done` never called) the model spent **~192 orientation ops (`read_file` + `list_dir`)
+against just 8 file-mutations**, and never once wrote `api`. Each fresh pass splits its
+budget between *loading* context — re-reading the spec and code — and *acting* on it;
+below a floor, loading crowds out acting entirely, and the **costliest increment sets
+that floor**: `api`, which must hold all four feature packages plus its spec at once, is
+unreachable in any single pass, so more passes cannot help. The obvious fix — raise
+`-ctx-limit` — does not generalise: it caps at the model's context window, and the tasks
+a Ralph loop exists for are *larger* than any window, so escalation only walks to the
+wall. Completing under a fixed window instead needs, per pass, a **bounded working set**
+(the slice a step needs fits the window), **cheap loading** of it, and **durable,
+monotonic progress** — and the working set must be bounded by the *interface* a step
+touches, not the *implementation* behind it (`api` needs four signatures, not four files).
+That is how bounded passes compose into an unbounded task. The full mechanism — and a
+minimal, not-yet-built fix (a cheap pass-start digest, `go doc` interfaces, a soft-limit
+checkpoint) — is in [docs/stagnation.md](docs/stagnation.md).
+
 ## Code quality is a separate axis
 
 Passing the gate means the code is *correct*, not that it is *good*; the harness
