@@ -186,6 +186,19 @@ and the result is more nuanced than a clean "resume works":
   "implementation split across passes" still hasn't landed on this model; the band
   between stagnation and one-shot is narrow.
 
+**Two nudges, tried and removed.** Because the first bullet pins the stall partly on
+neglected notes, an experiment added two opt-in reminders between passes — one to
+update `PROGRESS.md` when code advanced without it, one to implement rather than
+re-read when a pass made no code progress. Measured on `graphkit`/oQ4, neither
+lifted completion. At `-ctx-limit 11000` every run jammed at the same 3-of-6 wall
+(baseline 0/4, nudges 0–1/5): resuming means re-reading the done packages plus the
+next spec, which fills the 11k window *before* any code can be written — a per-pass
+**budget floor** a prompt cannot lift. Raise the budget to 13000 and the floor
+clears, but there the baseline already completes on its own (3/4) and the stall
+nudge only matches it (3/4). The real lever is per-pass budget (`-ctx-limit`), not
+prompting — so both nudges were removed rather than kept as dead weight. (Raw rows
+in `logs/runs.jsonl`; single-digit samples, ordinal.)
+
 That same completing run also exposed a gap in the gate: the `components` it
 certified is **flaky** (its SCC mispartitions on ~8% of runs, by map-iteration
 order). at the time, `go test -count=1` defeated the test *cache* but sampled a *single*
