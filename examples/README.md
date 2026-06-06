@@ -156,8 +156,31 @@ first guessed:
   bottleneck is verification, not generation, and the band between "stagnates" and
   "one-shots" is narrow.
 
-`graphkit` is the right substrate for this; `calc` was too small to even be a
-candidate. The completing run also exercised the spec's *algorithm-independence* —
+**The purpose-built substrate — `apikit`, measured.** `apikit` (five independent
+packages, built for exactly this question) was run at both ends of the budget, and
+it lands the same way `graphkit` did. At **`-ctx-limit 26000` it one-shots** (1 pass,
+~3.7 min, **5/5** packages, ~8.6k completion tokens, ~90% of prompt from cache) — a
+five-package HTTP service still inside a single pass once the budget clears its peak.
+At **`-ctx-limit 11000` it never completes: 8 runs, 0 completions**, every one
+stagnating at **3–4 of 5** packages — always `health`, `tasks`, `users`, with `notes`
+the swing package and `api` (the composition that must hold the other four in
+context) reached by *none*. Same lever as `graphkit`: per-pass budget, not task
+structure, decides completion.
+
+`apikit` also carried a **replicated `-memory` A/B** (n=4 each at 11k) that puts the
+earlier "memory=true ≈ memory=false" result on *outcome* rather than read-counts — and
+it holds. Packages reached: **memory=true `{4,3,4,4}`** (mean 3.75, 4/5 in 3 of 4) vs
+**memory=false `{3,3,3,4}`** (mean 3.25, 4/5 in 1 of 4). The distributions overlap —
+both span 3–4 — and a Fisher's exact test on "reached 4" (3/4 vs 1/4) gives **p ≈ 0.5**:
+no establishable effect, a faint non-significant lean at most. The sting is in the
+n=1: the *first single pair* (memory=true 4/5 vs memory=false 3/5) read as a clean
+memory win, and replication dissolved it — exactly the trap the "single-digit samples,
+ordinal" caveat is for. Cross-pass memory does not lift the budget floor; it only,
+maybe, nudges the frontier half a package.
+
+`graphkit` and `apikit` are the substrates built for this; `calc` was too small to even be a
+candidate. The completing `graphkit` run also exercised the spec's
+*algorithm-independence* —
 the model solved SCC with Kosaraju where the reference uses Tarjan, and the
 canonical-form contract accepted it — **but with a sting in the tail.** That same
 `components` package is **flaky**: its Kosaraju mispartitions on ~8% of runs (it

@@ -226,6 +226,17 @@ independent rolls): enough for high-rate flakes, but at ~8% no guarantee. The fu
 write-up — including a measured 27B-oQ4 run that also one-shot — is in
 [examples/README.md](examples/README.md).
 
+**Confirmed on a second, purpose-built task.** `apikit` — five independent packages,
+built for exactly this — reproduces both halves on fresh ground. At `-ctx-limit 26000`
+it one-shots (**5/5**, one pass, ~3.7 min); at `-ctx-limit 11000` it never completes —
+**8 runs, 0 completions**, all stagnating at 3–4 of 5 packages with `api` reached by
+none. A **replicated `-memory` A/B** (n=4 each) settles the memory question on
+*outcome*, not read-counts: packages reached `{4,3,4,4}` (memory) vs `{3,3,3,4}` (no
+memory) overlap, and "reached 4" (3/4 vs 1/4) is **not significant (Fisher p ≈ 0.5)**.
+The first single pair looked like a memory win and replication dissolved it — the n=1
+trap the "ordinal, single-digit samples" caveat is about. Detail in
+[examples/README.md](examples/README.md).
+
 ## Code quality is a separate axis
 
 Passing the gate means the code is *correct*, not that it is *good*; the harness
