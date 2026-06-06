@@ -221,7 +221,10 @@ func errProtectedTest(path string) error {
 
 // safeJoin resolves p against root and keeps the result inside root. Prefixing
 // with "/" before Clean collapses any leading "../" so traversal cannot climb
-// above root; the Rel check is a second line of defence.
+// above root; the Rel check is a second line of defence. Confinement is purely
+// lexical and does not resolve symlinks: a symlink under root pointing outside
+// would still be followed. That is unreachable here — the fs tools cannot create
+// symlinks — but safeJoin alone is not symlink-safe.
 func safeJoin(root, p string) (string, error) {
 	abs := filepath.Join(root, filepath.Clean("/"+p))
 	rel, err := filepath.Rel(root, abs)
