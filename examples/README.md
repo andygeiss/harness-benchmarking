@@ -62,6 +62,18 @@ harness against it. Any extra flags are forwarded to the harness:
   spec is deterministic by construction — all node/edge iteration in ascending
   label order, components and paths in canonical form — so "verification passed"
   means the algorithms are correct, not that the model matched a map order.
+- **apikit** — a **modular JSON HTTP API** (module `apikit`, five packages): a
+  `health` liveness check, three independent CRUD resources (`users`, with
+  `409`-on-duplicate-email; `tasks`, with a boolean field; `notes`, with an
+  optional field), and an `api` package that composes them behind one mux with a
+  catch-all `404`. The feature packages share no code and do not import each other
+  — only `api` imports them — so the build can accrete **one self-contained package
+  at a time**. This is the substrate for the **long-run / per-pass-budget**
+  question: each feature is a small independent increment, so a run can make
+  progress across many passes without holding the whole service in context. Each
+  package ships its own spec (`*_test.go` driving the handlers through `httptest`)
+  with uniform conventions (REST verbs, JSON shapes, status codes) stated in
+  `PROMPT.md`.
 
 ## Cross-pass memory (and why these examples one-shot here)
 

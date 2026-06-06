@@ -150,7 +150,8 @@ harness against it (extra flags are forwarded):
 go run ./cmd/example reverse     # rune-aware string reversal — smallest end-to-end check
 go run ./cmd/example calc        # arithmetic evaluator: lexer → parser → eval
 go run ./cmd/example todo        # htmx web app: net/http + html/template + embed
-go run ./cmd/example graphkit    # six-package graph library — the largest task
+go run ./cmd/example graphkit    # six-package graph algorithms library
+go run ./cmd/example apikit      # modular JSON HTTP API (5 packages) — built for multi-pass runs
 go run ./cmd/example stuck       # adversarial: unsatisfiable test, exercises the stagnation guard
 ```
 
