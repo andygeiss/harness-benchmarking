@@ -20,9 +20,9 @@ of sandboxed tools: read / write / edit files, list directories, run the Go
 toolchain, and a `done` tool. The model works until it calls `done`; the harness
 then runs a **verification command** (default `go test ./...`) and ends the run
 only if it passes. Completion is never the model's word for it — it's a gate the
-model cannot fake.
+model has to actually pass.
 
-Two properties make that gate trustworthy:
+Two properties make that gate hard to game:
 
 - **The tests are the spec, and the model can't author them.** Writes to
   `*_test.go` are refused, so the model can't pass by gutting the very test it is
@@ -31,6 +31,13 @@ Two properties make that gate trustworthy:
   parses the `-json` event stream and accepts only when real tests passed — a
   binary that prints `ok` and exits 0 without running anything (e.g. an
   `os.Exit` in non-test code) is rejected.
+
+Both raise the cost of cheating rather than making it impossible: the verdict is
+parsed from the test binary's own `-json` markers, so a non-test `.go` file
+compiled beside the spec could forge a passing one — print a `--- PASS` line,
+then `os.Exit` before the real test runs. It's a narrow, documented hole,
+acceptable for the local, non-adversarial model this targets; the
+[CLAUDE.md](CLAUDE.md) invariants spell it out.
 
 ## Architecture
 
