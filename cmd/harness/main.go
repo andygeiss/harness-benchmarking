@@ -67,7 +67,7 @@ const (
 
 func main() {
 	endpoint := flag.String("endpoint", "http://localhost:1234/v1", "base URL of the OpenAI-compatible oMLX server")
-	model := flag.String("model", "Qwen3.6-35B-A3B-oQ6-fp16-mtp", "model name")
+	model := flag.String("model", "Qwen3.6-35B-A3B-oQ4-fp16-mtp", "model name")
 	promptPath := flag.String("prompt", "", "path to the task prompt file (required)")
 	systemPath := flag.String("system", "", "path to a system prompt file (optional; overrides the built-in)")
 	workdir := flag.String("workdir", ".", "workspace directory the agent operates in")

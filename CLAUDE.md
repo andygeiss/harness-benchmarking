@@ -11,7 +11,7 @@ the findings, see [README.md](README.md).
 An autonomous AI agent harness — a Go implementation of the "Ralph loop": it
 runs a single fixed prompt against a local LLM, letting the model act through
 tools until the task **verifiably** completes, with no human in the loop. The
-target model is `Qwen3.6-35B-A3B-oQ6-fp16-mtp` served by a local **oMLX** server
+target model is `Qwen3.6-35B-A3B-oQ4-fp16-mtp` served by a local **oMLX** server
 (OpenAI-compatible API) on an Apple Silicon Mac. See [README.md](README.md) for
 the full overview; the rest of this file is the parts an agent modifying the
 repo must not get wrong.
