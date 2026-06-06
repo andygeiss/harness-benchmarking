@@ -161,18 +161,38 @@ and details: [examples/README.md](examples/README.md).
 
 ## An honest finding: cross-pass resume
 
-The Ralph loop exists to carry a task across context resets — but on the default
-35B model, **every example completes in a single pass.** Even `graphkit` (six
+The Ralph loop exists to carry a task across context resets — but at the **default
+per-pass budget, every example completes in a single pass.** Even `graphkit` (six
 packages, ~730 lines) one-shots: ~730 lines is not enough tokens to overflow a
 52k-token pass when the model's window is 64k+ and prompt-caching keeps
-accumulation cheap. So the `PROGRESS.md` hand-off and the `-memory` A/B are, on
-this model, effectively un-exercised by real work.
+accumulation cheap. So at default budget the `PROGRESS.md` hand-off and the
+`-memory` A/B are effectively un-exercised by real work.
 
-To genuinely trigger cross-pass resume you have to cap the budget *below* a
-task's single-pass peak (`-ctx-limit ~10000–12000` on graphkit), go dramatically
-larger, or use a weaker model that makes mistakes and iterates. The machinery is
-kept for exactly those cases. The full write-up — including a measured 27B-oQ4
-run that also one-shot — is in [examples/README.md](examples/README.md).
+Capping the per-pass budget *below* a task's single-pass peak does drive the loop
+into multiple passes. Two measured `graphkit` runs on the oQ4 default bracket it,
+and the result is more nuanced than a clean "resume works":
+
+- **`-ctx-limit 11000` → stagnates at 4/6 packages** (12 passes, all `context`).
+  Here resume is *real but incomplete*: `graph`, `traverse`, `paths` (including a
+  cross-pass fix to its Dijkstra heap) and `toposort` accrete across resets — then
+  it stalls, because the model writes `PROGRESS.md` *once* and never updates it, so
+  every fresh pass re-derives state by re-reading and re-testing the existing
+  packages, exhausting the budget before new code is written. With the plan-memory
+  neglected, `-memory=true` quietly degrades to `-memory=false`.
+- **`-ctx-limit 16000` → completes in 2 passes** (`context` → `completed`) — the
+  first run to finish across a context reset, but a *thin* multi-pass win: pass 1
+  writes all six packages and is guillotined one step before it can verify; pass 2
+  only resumes, re-verifies, and calls `done` — it writes no new code. A clean
+  "implementation split across passes" still hasn't landed on this model; the band
+  between stagnation and one-shot is narrow.
+
+That same completing run also exposed a gap in the gate: the `components` it
+certified is **flaky** (its SCC mispartitions on ~8% of runs, by map-iteration
+order). `go test -count=1` defeats the test *cache* but samples a *single*
+execution, so a non-deterministic implementation passes on a lucky roll — a
+non-adversarial path to a falsely-green gate, distinct from the adversarial one in
+[CLAUDE.md](CLAUDE.md). The full write-up — including a measured 27B-oQ4 run that
+also one-shot — is in [examples/README.md](examples/README.md).
 
 ## Code quality is a separate axis
 

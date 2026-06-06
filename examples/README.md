@@ -118,15 +118,48 @@ enough: a measured **27B-oQ4 run at `-ctx-limit 16384` also one-shot** (`passes:
 ~13 min, 701 lines), because the peak working context sat *just under* that cap,
 ~15–16k tokens. Three things keep a pass that small: the reasoning trace is
 stripped from history (that run emitted only ~7.4k completion tokens total), the
-writes are compact, and ~87% of the prompt was served from cache. So the cap has
-to sit *below* the peak — about **`-ctx-limit 10000–12000`** — to end a pass on
-`context` mid-implementation and resume from the persisted packages plus
-`PROGRESS.md` (now *meaningful*, since the resumed state is real). `graphkit` is
-the right substrate for that measurement; `calc` was too small to even be a
-candidate. The run also validated the spec's *algorithm-independence*:
+writes are compact, and ~87% of the prompt was served from cache. So the cap has to sit *below* the peak — and **two measured `graphkit` runs on the
+oQ4 default bracket the window**, with a result more nuanced than the clean resume
+first guessed:
+
+- **`-ctx-limit 11000` → stagnates at 4/6 packages** (12 passes, all `context`,
+  ~9.5 min). This is the closest thing to *real* incremental resume the harness has
+  shown: `graph`, `traverse`, `paths` (including a cross-pass fix to its Dijkstra
+  heap) and `toposort` are written and survive across resets — but `components` and
+  `spanning` never get written. The model writes `PROGRESS.md` *once* and never
+  updates it, so each fresh pass re-derives state by re-reading and re-testing the
+  existing packages, which alone exhausts the 11k budget before any new code is
+  written; three unchanged passes trip the stagnation guard. With the plan-memory
+  neglected, `-memory=true` quietly degrades to `-memory=false`. So ~10–12k is *too
+  low* — it drives multi-pass operation but starves completion.
+- **`-ctx-limit 16000` → completes in 2 passes** (`context` → `completed`, ~4 min) —
+  the first run to finish across a context reset, but a *thin* one. Pass 1 writes
+  all six packages and is cut off by the budget one step before it can run the full
+  suite or call `done`; pass 2 resumes from the persisted files with a fresh
+  context, re-verifies, updates `PROGRESS.md` (it maintains it this time —
+  maintaining the memory is itself budget-dependent), and calls `done` — writing no
+  new implementation. So the filesystem hand-off demonstrably carries a run to
+  completion across a reset, but the strong case — implementation genuinely *split*
+  across passes — still hasn't landed on this model: it builds fast, so the
+  bottleneck is verification, not generation, and the band between "stagnates" and
+  "one-shots" is narrow.
+
+`graphkit` is the right substrate for this; `calc` was too small to even be a
+candidate. The completing run also exercised the spec's *algorithm-independence* —
 the model solved SCC with Kosaraju where the reference uses Tarjan, and the
-canonical-form contract accepted it — "verification passed" tracks correctness,
-not a particular implementation.
+canonical-form contract accepted it — **but with a sting in the tail.** That same
+`components` package is **flaky**: its Kosaraju mispartitions on ~8% of runs (it
+splits a genuinely strongly-connected pair, `{d,e}`), depending on Go's
+map-iteration order. The done-gate runs `go test -json -count=1`, which defeats the
+test *cache* but samples a *single* execution — so a non-deterministic
+implementation passes on a lucky roll, and this run was certified `completed` on
+exactly such a roll (the end-of-pass probe drew a *failing* one after pass 1, the
+only reason the run took two passes rather than completing via the probe in one).
+`-count=1` closes the accidental exit-0/no-test path (see `CLAUDE.md`), **not**
+non-determinism: a flaky test is a non-adversarial way past a falsely-green gate,
+distinct from the documented adversarial forge-the-markers hole. So "verification
+passed" tracks correctness only as far as one execution can — for a deterministic
+spec, usually enough; for a non-deterministic *implementation* of it, not.
 
 ## Measuring code quality
 
