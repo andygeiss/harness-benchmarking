@@ -72,17 +72,21 @@ func CommandVerifier(dir string, command []string, timeout time.Duration) Verifi
 	}
 }
 
-// GoTestVerifier builds a Verifier that runs `go test -json -count=1` for the
+// GoTestVerifier builds a Verifier that runs `go test -json -count=3` for the
 // given package patterns and passes only if the spec's tests actually RAN and
 // PASSED. Exit status alone is not trusted: a test binary that exits early — an
 // os.Exit or init() in a NON-test file, which -protect-tests permits because it
 // guards only *_test.go — prints "ok" and exits 0 while running no tests. Demanding
 // at least one test-level pass, no failures, and no test left unfinished closes
-// that last path to a falsely-green gate. -count=1 defeats the test cache, so a
-// fresh execution is always observed rather than a replayed result.
+// that last path to a falsely-green gate. -count=3 defeats the test cache (a fresh
+// execution is always observed, not a replay) and runs each test three times in
+// one process, so an order-dependent flaky test — e.g. one sensitive to Go's
+// randomized map iteration — gets three independent chances to fail the gate. That
+// is a probabilistic guard against non-determinism, not a guarantee: a low-rate
+// flake can still pass all three rolls (see the "Passes" invariant in CLAUDE.md).
 func GoTestVerifier(dir string, timeout time.Duration, patterns []string) Verifier {
 	return func(ctx context.Context) (bool, string, error) {
-		args := append([]string{"test", "-json", "-count=1"}, patterns...)
+		args := append([]string{"test", "-json", "-count=3"}, patterns...)
 		out, _, err := runCmdFull(ctx, dir, timeout, "go", args...)
 		if err != nil {
 			return false, "", err

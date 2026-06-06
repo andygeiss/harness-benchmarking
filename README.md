@@ -188,11 +188,13 @@ and the result is more nuanced than a clean "resume works":
 
 That same completing run also exposed a gap in the gate: the `components` it
 certified is **flaky** (its SCC mispartitions on ~8% of runs, by map-iteration
-order). `go test -count=1` defeats the test *cache* but samples a *single*
-execution, so a non-deterministic implementation passes on a lucky roll — a
+order). at the time, `go test -count=1` defeated the test *cache* but sampled a *single*
+execution, so a non-deterministic implementation passed on a lucky roll — a
 non-adversarial path to a falsely-green gate, distinct from the adversarial one in
-[CLAUDE.md](CLAUDE.md). The full write-up — including a measured 27B-oQ4 run that
-also one-shot — is in [examples/README.md](examples/README.md).
+[CLAUDE.md](CLAUDE.md). The gate has since been hardened to `-count=3` (three
+independent rolls): enough for high-rate flakes, but at ~8% no guarantee. The full
+write-up — including a measured 27B-oQ4 run that also one-shot — is in
+[examples/README.md](examples/README.md).
 
 ## Code quality is a separate axis
 

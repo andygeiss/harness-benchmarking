@@ -150,16 +150,19 @@ the model solved SCC with Kosaraju where the reference uses Tarjan, and the
 canonical-form contract accepted it — **but with a sting in the tail.** That same
 `components` package is **flaky**: its Kosaraju mispartitions on ~8% of runs (it
 splits a genuinely strongly-connected pair, `{d,e}`), depending on Go's
-map-iteration order. The done-gate runs `go test -json -count=1`, which defeats the
-test *cache* but samples a *single* execution — so a non-deterministic
-implementation passes on a lucky roll, and this run was certified `completed` on
+map-iteration order. at the time, the done-gate ran `go test -json -count=1`, which defeated the
+test *cache* but sampled a *single* execution — so a non-deterministic
+implementation passed on a lucky roll, and this run was certified `completed` on
 exactly such a roll (the end-of-pass probe drew a *failing* one after pass 1, the
 only reason the run took two passes rather than completing via the probe in one).
-`-count=1` closes the accidental exit-0/no-test path (see `CLAUDE.md`), **not**
+`-count=1` closed the accidental exit-0/no-test path (see `CLAUDE.md`), **not**
 non-determinism: a flaky test is a non-adversarial way past a falsely-green gate,
-distinct from the documented adversarial forge-the-markers hole. So "verification
-passed" tracks correctness only as far as one execution can — for a deterministic
-spec, usually enough; for a non-deterministic *implementation* of it, not.
+distinct from the documented adversarial forge-the-markers hole. The gate has since
+been hardened to `-count=3` — three independent rolls per check — turning this from
+an unbounded surprise into the bounded, documented caveat now in `CLAUDE.md`; at an
+~8% flake rate it stays probabilistic, not a proof. So "verification passed" tracks
+correctness only as far as those executions can — for a deterministic spec, easily
+enough; for a non-deterministic *implementation* of it, not.
 
 ## Measuring code quality
 

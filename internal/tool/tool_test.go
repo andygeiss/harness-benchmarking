@@ -303,6 +303,36 @@ func TestGoTestVerifierClosesExitHole(t *testing.T) {
 	}
 }
 
+// TestGoTestVerifierRunsRepeatedly proves the gate runs the suite more than once,
+// so an order-dependent flaky test gets more than a single roll to fail. The spec
+// here passes on its first invocation and fails on its second; a package-level
+// counter persists across the repeated runs within the one test process, so
+// -count=1 would accept it while -count>=2 must reject it.
+func TestGoTestVerifierRunsRepeatedly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles and runs go test")
+	}
+	dir := t.TempDir()
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module flaky\n\ngo 1.26\n")
+	// calls persists across -count repeats in the same process: pass on run 1,
+	// fail on run 2. A single execution would never observe the failure.
+	write("p_test.go", "package p\n\nimport \"testing\"\n\nvar calls int\n\nfunc TestFlaky(t *testing.T) {\n\tcalls++\n\tif calls >= 2 {\n\t\tt.Fatalf(\"deterministic fail on run %d\", calls)\n\t}\n}\n")
+
+	ok, out, err := GoTestVerifier(dir, time.Minute, []string{"./..."})(context.Background())
+	if err != nil {
+		t.Fatalf("verify: %v\n%s", err, out)
+	}
+	if ok {
+		t.Fatalf("gate accepted a test that fails on its second run; the suite was not re-run (count<2):\n%s", out)
+	}
+}
+
 // TestVerifierForRouting pins the dispatch that decides whether the anti-gaming
 // guarantee even applies: a `go test` command must get the strict GoTestVerifier
 // (which rejects a build that runs zero tests), while any other command falls back
