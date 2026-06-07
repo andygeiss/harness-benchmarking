@@ -137,7 +137,7 @@ func (s *goTestSummary) add(e goTestEvent) {
 // output does not explain on its own (it just says "ok"), so the model is steered
 // to fix the code rather than the test bypass.
 const (
-	msgNoTests  = "\n[verification executed 0 tests: the test binary reported success without running the spec — e.g. an os.Exit or init() in a non-test file short-circuiting the run. Implement the code so the spec's own tests run and pass; do not bypass them.]"
+	msgNoTests  = "\n[verification executed 0 tests: the test binary reported success but no spec test ran — either the package's tests are still unimplemented or all skipped, or a non-test file (e.g. an os.Exit or init()) short-circuited the run before they could. Implement the code so the spec's own tests run and pass; do not skip or bypass them.]"
 	msgDangling = "\n[a test started but never finished: the test binary exited mid-run. Remove any os.Exit or other early termination from non-test code so the suite runs to completion.]"
 )
 

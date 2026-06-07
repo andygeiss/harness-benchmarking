@@ -71,7 +71,7 @@ func main() {
 	promptPath := flag.String("prompt", "", "path to the task prompt file (required)")
 	systemPath := flag.String("system", "", "path to a system prompt file (optional; overrides the built-in)")
 	workdir := flag.String("workdir", ".", "workspace directory the agent operates in")
-	verifyCmd := flag.String("verify", "go test ./...", "verification command run by the done gate")
+	verifyCmd := flag.String("verify", "go test ./...", "verification command run by the done gate (split on whitespace; cannot carry quoted or spaced arguments)")
 	maxIters := flag.Int("max-iters", 25, "maximum Ralph passes")
 	maxSteps := flag.Int("max-steps", 40, "maximum tool steps per pass")
 	ctxLimit := flag.Int("ctx-limit", 52000, "end a pass once total tokens reach this")
@@ -248,7 +248,8 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 		}
 
 		// End-of-pass verification probe: when the pass changed the workspace
-		// but the model stopped without a successful done, run the same gate
+		// but did not end in a successful done — the model stopped, hit a budget,
+		// or even errored after the work was already correct — run the same gate
 		// here and finish now if it passes, instead of spending another pass
 		// only to re-verify already-correct code (see probeComplete).
 		done, lv := probeComplete(ctx, log, verify, fp, lastVerified, iter)
@@ -290,8 +291,9 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 
 // probeComplete is the outer-loop counterpart to the model calling done: when a
 // pass has advanced the workspace (fp != lastVerified) it runs the SAME Verifier
-// the done gate uses, so a model that finished the work but stopped without
-// signalling completion is recognised here instead of wasting another pass. It
+// the done gate uses, so a pass that finished the work but did not signal
+// completion — the model stopped, hit a budget, or errored after the code was
+// already correct — is recognised here instead of wasting another pass. It
 // returns whether the task now verifies and the fingerprint to remember as last
 // verified — advanced to fp once the gate gives a definitive answer (so identical
 // bytes are not re-verified), left unchanged on a transient verifier error so the
