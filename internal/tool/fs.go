@@ -22,8 +22,13 @@ const maxFileBytes = 256 << 10 // cap on read_file output
 // go tool and the done gate still compile and run the real files. The set is fed by
 // the verifier (GoTestVerifier's onPass — which runs anyway, for the done gate and
 // the end-of-pass probe, so elision adds no test execution) and only read during a
-// pass: single-goroutine throughout, so it needs no lock. A nil *ElideState elides
-// nothing, the behaviour ReadFile falls back to in tests.
+// pass: single-goroutine throughout, so it needs no lock. A test *failure* still feeds
+// the set (the package drops out), so a regression self-corrects; only a verifier run
+// that cannot start at all (`runCmdFull` errors — e.g. a missing workspace) skips the
+// feed and carries the prior set forward — gate-safe (the done gate reads the real specs
+// from disk, so a stale entry can never cause a false completion) and replaced by the
+// next successful run. A nil *ElideState elides nothing, the behaviour ReadFile falls
+// back to in tests.
 type ElideState struct {
 	passing map[string]bool
 	elided  int

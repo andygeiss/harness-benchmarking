@@ -373,17 +373,13 @@ func TestImportToDir(t *testing.T) {
 	}
 }
 
-// TestVerifierFeedsPassingDirs proves spec elision is fed from the gate's own run
-// (GoTestVerifier's onPass), at directory granularity, and only for a `go test`
-// command — a non-test verify command routes to the exit-status verifier and never
-// feeds the set, so elision is a no-op there. This is the guarantee that lets the
-// completion run double as the per-package status probe (no separate test run).
-func TestVerifierFeedsPassingDirs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("compiles and runs go test")
-	}
-	dir := t.TempDir()
-	write := func(name, content string) {
+// elideFeedModule writes a one-package module (a passing lib package) under a fresh
+// temp dir for the spec-elision feed tests, returning the dir and a write helper to
+// mutate it. Shared so each feed test stays small.
+func elideFeedModule(t *testing.T) (dir string, write func(name, content string)) {
+	t.Helper()
+	dir = t.TempDir()
+	write = func(name, content string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755); err != nil {
 			t.Fatal(err)
@@ -394,6 +390,19 @@ func TestVerifierFeedsPassingDirs(t *testing.T) {
 	}
 	write("go.mod", "module ef\n\ngo 1.26\n")
 	write("lib/lib_test.go", "package lib\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) {}\n")
+	return dir, write
+}
+
+// TestVerifierFeedsPassingDirs proves spec elision is fed from the gate's own run
+// (GoTestVerifier's onPass), at directory granularity, and only for a `go test`
+// command — a non-test verify command routes to the exit-status verifier and never
+// feeds the set, so elision is a no-op there. This is the guarantee that lets the
+// completion run double as the per-package status probe (no separate test run).
+func TestVerifierFeedsPassingDirs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles and runs go test")
+	}
+	dir, _ := elideFeedModule(t)
 
 	var got map[string]bool
 	called := false
@@ -416,6 +425,45 @@ func TestVerifierFeedsPassingDirs(t *testing.T) {
 	}
 	if called {
 		t.Error("a non go-test verify command must not feed the elide set")
+	}
+}
+
+// TestVerifierFeedDropsRegressionAndSkipsStartError exercises the feed's gate-safe
+// edges: a regressed (now-failing) package drops out of the set on the next run, and a
+// run that cannot start at all skips the feed entirely so the prior set carries forward
+// (never cleared). With the disk-untouched gate, this is why a stale entry can never
+// cause a false completion.
+func TestVerifierFeedDropsRegressionAndSkipsStartError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles and runs go test")
+	}
+	dir, write := elideFeedModule(t)
+
+	var got map[string]bool
+	called := false
+	sink := func(dirs map[string]bool) { called, got = true, dirs }
+
+	// A regression still feeds the set, with the now-failing package dropped out — so a
+	// package that breaks self-corrects rather than staying wrongly elided.
+	write("lib/lib_test.go", "package lib\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) { t.Fatal(\"boom\") }\n")
+	if ok, _, err := VerifierFor(dir, []string{"go", "test", "./..."}, time.Minute, sink)(context.Background()); err != nil {
+		t.Fatalf("go test verify (regressed): %v", err)
+	} else if ok {
+		t.Fatal("a failing spec must not verify")
+	}
+	if !called || got["lib"] {
+		t.Errorf("a regressed package must drop out of the fed set; called=%v got=%v", called, got)
+	}
+
+	// A run that cannot start at all (missing workspace) skips onPass entirely, so the
+	// prior set carries forward — it is never cleared on a start failure.
+	called = false
+	missing := filepath.Join(dir, "does-not-exist")
+	if _, _, err := VerifierFor(missing, []string{"go", "test", "./..."}, time.Minute, sink)(context.Background()); err == nil {
+		t.Error("a missing workspace should surface a verifier start error")
+	}
+	if called {
+		t.Error("onPass must not fire when go test cannot start; the prior set carries forward")
 	}
 }
 

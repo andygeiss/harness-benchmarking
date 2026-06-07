@@ -92,7 +92,10 @@ func CommandVerifier(dir string, command []string, timeout time.Duration) Verifi
 //
 // onPass, if non-nil, is called after each run with the package directories that
 // passed (see passingDirsFrom), feeding the spec-elision read set from this same
-// execution so no separate per-pass status probe is needed.
+// execution so no separate per-pass status probe is needed. It fires whenever
+// `go test` ran (on a pass or a fail verdict, so a regression drops a package from
+// the set); a run that cannot start at all (`runCmdFull` errors) returns before
+// onPass, leaving the prior set unchanged.
 func GoTestVerifier(dir string, timeout time.Duration, patterns []string, onPass func(map[string]bool)) Verifier {
 	return func(ctx context.Context) (bool, string, error) {
 		args := append([]string{"test", "-json", "-count=3"}, patterns...)
