@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -114,5 +115,49 @@ func TestCompleteStream(t *testing.T) {
 	}
 	if resp.Choices[0].FinishReason != "tool_calls" || resp.Usage.TotalTokens != 42 {
 		t.Errorf("finish=%q usage=%d", resp.Choices[0].FinishReason, resp.Usage.TotalTokens)
+	}
+}
+
+// TestCompleteStreamStatusErrors covers CompleteStream's own status-code legs,
+// which are a separate code path from Complete's: a streamed 5xx is transient
+// (Retryable) while a 4xx is permanent.
+func TestCompleteStreamStatusErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		retryable bool
+	}{
+		{"5xx is transient", http.StatusServiceUnavailable, true},
+		{"4xx is permanent", http.StatusBadRequest, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "nope", tc.status)
+			}))
+			defer srv.Close()
+			if _, err := NewClient(srv.URL, "m").CompleteStream(context.Background(), Request{}, nil); err == nil {
+				t.Fatalf("status %d should error", tc.status)
+			} else if Retryable(err) != tc.retryable {
+				t.Errorf("Retryable = %v, want %v (err: %v)", Retryable(err), tc.retryable, err)
+			}
+		})
+	}
+}
+
+// TestCompleteStreamTruncated: a body that closes cleanly before [DONE] and before
+// any finish_reason was cut mid-response. bufio.Scanner reports the clean EOF as
+// success, so CompleteStream must catch the missing terminator and surface a
+// Retryable (truncated-read) error rather than return the partial turn.
+func TestCompleteStreamTruncated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"partial"}}]}`+"\n\n")
+	}))
+	defer srv.Close()
+	_, err := NewClient(srv.URL, "m").CompleteStream(context.Background(), Request{}, nil)
+	if err == nil {
+		t.Fatal("a stream truncated before [DONE] should error")
+	}
+	if !Retryable(err) {
+		t.Errorf("a truncated stream must be Retryable, got %v", err)
 	}
 }

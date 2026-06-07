@@ -38,9 +38,18 @@ func TestClip(t *testing.T) {
 	if got := clip("short", 100); got != "short" {
 		t.Errorf("clip short = %q", got)
 	}
-	got := clip(strings.Repeat("x", 1000), 100)
+	// Distinct head and tail so a regression that kept only one end (or dropped the
+	// boundary) is caught: clip preserves the head (where compiler errors live) and
+	// the tail (where the test summary lives), eliding the middle.
+	got := clip("HEAD"+strings.Repeat("-", 1000)+"TAIL", 100)
 	if len(got) > 100 {
 		t.Errorf("clip len = %d, want <= 100", len(got))
+	}
+	if !strings.HasPrefix(got, "HEAD") {
+		t.Errorf("clip dropped the head: %q", got)
+	}
+	if !strings.HasSuffix(got, "TAIL") {
+		t.Errorf("clip dropped the tail: %q", got)
 	}
 	if !strings.Contains(got, "truncated") {
 		t.Errorf("clip missing marker: %q", got)
