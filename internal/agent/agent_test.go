@@ -282,6 +282,81 @@ func TestDoneLoopResetsOnWrite(t *testing.T) {
 	}
 }
 
+// TestRunRecordsToolMetrics locks the load:act instrumentation: the per-tool call
+// counts and the read_file byte total folded into Result.Metrics. The model calls
+// read_file (returning a known-length payload), list_dir, then write_file, then
+// stops. The metrics must count each tool by name and attribute ONLY the read_file
+// payload to ReadBytes — the load-vs-act signal docs/stagnation.md turns on.
+func TestRunRecordsToolMetrics(t *testing.T) {
+	toolCall := func(id, name string) string {
+		return `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"` + id +
+			`","type":"function","function":{"name":"` + name + `","arguments":"{}"}}]}}],"usage":{"total_tokens":1}}`
+	}
+	responses := []string{
+		toolCall("r", "read_file"),
+		toolCall("l", "list_dir"),
+		toolCall("w", "write_file"),
+		`{"choices":[{"message":{"role":"assistant","content":"stop"}}],"usage":{"total_tokens":1}}`,
+	}
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		i := min(n, len(responses)-1)
+		n++
+		_, _ = w.Write([]byte(responses[i]))
+	}))
+	defer srv.Close()
+
+	const payload = "package x\n" // the read_file return; its length is what ReadBytes must capture
+	reg := tool.NewRegistry()
+	reg.Register(tool.Tool{Name: "read_file", Schema: map[string]any{"type": "object"}, Run: func(context.Context, json.RawMessage) (string, error) { return payload, nil }})
+	reg.Register(tool.Tool{Name: "list_dir", Schema: map[string]any{"type": "object"}, Run: func(context.Context, json.RawMessage) (string, error) { return "a.go\nb.go", nil }})
+	reg.Register(tool.Tool{Name: "write_file", Schema: map[string]any{"type": "object"}, Run: func(context.Context, json.RawMessage) (string, error) { return "wrote 5 bytes", nil }})
+
+	sess := NewSession(llm.NewClient(srv.URL, "m"), reg, llm.Sampling{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{MaxSteps: 10})
+	res, err := sess.Run(context.Background(), "sys", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Metrics.ToolCalls != 3 {
+		t.Errorf("ToolCalls = %d, want 3", res.Metrics.ToolCalls)
+	}
+	want := map[string]int{"read_file": 1, "list_dir": 1, "write_file": 1}
+	for name, c := range want {
+		if got := res.Metrics.ToolCounts[name]; got != c {
+			t.Errorf("ToolCounts[%q] = %d, want %d", name, got, c)
+		}
+	}
+	if res.Metrics.ReadBytes != len(payload) {
+		t.Errorf("ReadBytes = %d, want %d (only the read_file payload, not list_dir/write_file results)", res.Metrics.ReadBytes, len(payload))
+	}
+}
+
+// TestMetricsAddMergesToolCounts locks the cross-pass aggregation the Ralph loop
+// relies on (total.Add(res.Metrics) per pass): per-tool counts sum by name and
+// ReadBytes accumulates, starting from a zero-value total whose map is nil — Add
+// must allocate it lazily rather than panic.
+func TestMetricsAddMergesToolCounts(t *testing.T) {
+	var total Metrics // zero value: ToolCounts is nil
+	total.Add(Metrics{ToolCalls: 2, ReadBytes: 100, ToolCounts: map[string]int{"read_file": 1, "list_dir": 1}})
+	total.Add(Metrics{ToolCalls: 1, ReadBytes: 50, ToolCounts: map[string]int{"read_file": 1, "write_file": 1}})
+
+	if total.ToolCalls != 3 {
+		t.Errorf("ToolCalls = %d, want 3", total.ToolCalls)
+	}
+	if total.ReadBytes != 150 {
+		t.Errorf("ReadBytes = %d, want 150", total.ReadBytes)
+	}
+	want := map[string]int{"read_file": 2, "list_dir": 1, "write_file": 1}
+	if len(total.ToolCounts) != len(want) {
+		t.Fatalf("ToolCounts = %v, want %v", total.ToolCounts, want)
+	}
+	for name, c := range want {
+		if got := total.ToolCounts[name]; got != c {
+			t.Errorf("ToolCounts[%q] = %d, want %d", name, got, c)
+		}
+	}
+}
+
 // TestRunStreamsThroughAgent exercises the streaming path through the loop
 // (Config.Stream): call dispatches to CompleteStream, onDelta writes each fragment
 // to StreamOut, and the loop ends identically to the non-streaming path. A regression

@@ -183,3 +183,13 @@ the known ones: a per-pass budget above (full-spec-set + act) — the working 26
 a model that reads selectively. This is the doc's own caveat, now demonstrated: the
 cheap-loading levers "rely on a weak model *using* the injected context well," and it does
 not. Raw rows in `runs.jsonl` (`digest` field) and `logs/apikit-11k-*.log`; n=3, ordinal.
+
+### Instrumentation now in `runs.jsonl`
+The load:act split that the Lever-1 analysis above hand-parsed from the stderr `tool`
+lines is now logged directly: every run records `tool_counts` (calls per tool name) and
+`read_bytes` (bytes `read_file` returned into the model's context) in `runs.jsonl`
+(`agent.Metrics`, agent-invisible). So the *count-based* load:act ratio
+(`read_file`+`list_dir` vs `write_file`+`edit_file`) and the *token-weighted* read share
+(`read_bytes` ÷ `prompt_tokens`) are available per run without re-parsing logs — the
+discriminating metric for the next A/B (e.g. the proposed read-path elision), where reads
+are expected to stay frequent while their token cost falls.

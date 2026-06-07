@@ -50,16 +50,24 @@ type Result struct {
 	Metrics   Metrics // token and call counters aggregated over the pass
 }
 
-// Metrics aggregates token and timing counters across model calls — over one
-// pass in a Result, or summed across passes for a whole run.
+// Metrics aggregates token, tool, and timing counters across model calls — over
+// one pass in a Result, or summed across passes for a whole run. ToolCounts and
+// ReadBytes are observability for the stagnation analysis: the per-tool-name
+// counts give the load:act ratio (read_file+list_dir vs write_file+edit_file) and
+// ReadBytes the token-weighted load — how much of each pass goes to re-reading
+// files rather than writing them, the cost the re-orientation floor turns on (see
+// docs/stagnation.md). Like the rest of Metrics they are agent-invisible
+// (runs.jsonl only).
 type Metrics struct {
-	ModelCalls       int     `json:"model_calls"`
-	ToolCalls        int     `json:"tool_calls"`
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	TotalTokens      int     `json:"total_tokens"`
-	CachedTokens     int     `json:"cached_tokens"`
-	ServerTimeSec    float64 `json:"server_time_sec"`
+	ModelCalls       int            `json:"model_calls"`
+	ToolCalls        int            `json:"tool_calls"`
+	PromptTokens     int            `json:"prompt_tokens"`
+	CompletionTokens int            `json:"completion_tokens"`
+	TotalTokens      int            `json:"total_tokens"`
+	CachedTokens     int            `json:"cached_tokens"`
+	ServerTimeSec    float64        `json:"server_time_sec"`
+	ToolCounts       map[string]int `json:"tool_counts"` // calls per tool name
+	ReadBytes        int            `json:"read_bytes"`  // bytes read_file returned into the model's context
 }
 
 // record folds one model call's usage into the metrics.
@@ -74,7 +82,9 @@ func (m *Metrics) record(u llm.Usage) {
 	}
 }
 
-// Add folds o into m, summing each counter.
+// Add folds o into m, summing each counter — used to total a run's metrics across
+// Ralph passes. Per-tool counts sum by name; the destination map is allocated
+// lazily so a zero-value total can absorb the first pass.
 func (m *Metrics) Add(o Metrics) {
 	m.ModelCalls += o.ModelCalls
 	m.ToolCalls += o.ToolCalls
@@ -83,6 +93,29 @@ func (m *Metrics) Add(o Metrics) {
 	m.TotalTokens += o.TotalTokens
 	m.CachedTokens += o.CachedTokens
 	m.ServerTimeSec += o.ServerTimeSec
+	m.ReadBytes += o.ReadBytes
+	if len(o.ToolCounts) > 0 && m.ToolCounts == nil {
+		m.ToolCounts = make(map[string]int, len(o.ToolCounts))
+	}
+	for name, n := range o.ToolCounts {
+		m.ToolCounts[name] += n
+	}
+}
+
+// recordTool folds one executed tool call into the metrics: the running total, a
+// per-tool-name count, and — for read_file — the bytes returned into the model's
+// context. The per-tool counts expose the load:act ratio and ReadBytes the
+// token-weighted re-read cost the stagnation analysis turns on. resultLen is the
+// length of the result string fed back to the model.
+func (m *Metrics) recordTool(name string, resultLen int) {
+	m.ToolCalls++
+	if m.ToolCounts == nil {
+		m.ToolCounts = make(map[string]int)
+	}
+	m.ToolCounts[name]++
+	if name == "read_file" {
+		m.ReadBytes += resultLen
+	}
 }
 
 // maxDoneFails ends a pass after this many done calls fail verification with no
@@ -128,8 +161,8 @@ func (s *Session) Run(ctx context.Context, system, prompt string) (Result, error
 		}
 
 		for _, tc := range choice.Message.ToolCalls {
-			m.ToolCalls++
 			result, completed := s.runTool(ctx, tc)
+			m.recordTool(tc.Function.Name, len(result))
 			msgs = append(msgs, llm.Message{Role: llm.RoleTool, ToolCallID: tc.ID, Content: result})
 			if completed {
 				return Result{Completed: true, Reason: "completed", Steps: step, Metrics: m}, nil

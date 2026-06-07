@@ -30,7 +30,7 @@ type RunLog struct {
 	MinP              float64  `json:"min_p"`
 	RepetitionPenalty float64  `json:"repetition_penalty"`
 	PresencePenalty   float64  `json:"presence_penalty"`
-	agent.Metrics              // model_calls, tool_calls, token counts, server_time_sec — flattened
+	agent.Metrics              // model_calls, tool_calls, tool_counts, read_bytes, token counts, server_time_sec — flattened
 }
 
 // appendRunLog appends rec as one JSON line to <dir>/runs.jsonl, creating dir as
