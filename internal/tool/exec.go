@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -34,6 +36,7 @@ func runCmdFull(ctx context.Context, dir string, timeout time.Duration, name str
 
 	cmd := exec.CommandContext(cctx, name, args...)
 	cmd.Dir = dir
+	cmd.Env = sandboxedGoEnv()
 	b, runErr := cmd.CombinedOutput()
 	res := string(b)
 
@@ -47,6 +50,27 @@ func runCmdFull(ctx context.Context, dir string, timeout time.Duration, name str
 		return "", false, fmt.Errorf("could not run %s: %w", name, runErr)
 	}
 	return res, false, nil
+}
+
+// sandboxedGoEnv returns the process environment with the Go-toolchain control
+// variables that could bypass checkGoArgs removed and pinned inert. GOFLAGS injects
+// flags like -exec/-toolexec/-o into an allowlisted `go` call out of band (the
+// allowlist only inspects the explicit args), GOENV repoints go at an
+// attacker-planted env file that can set them, and GOTOOLCHAIN can fetch and run a
+// different toolchain. The agent cannot set environment variables itself, so this
+// is defense-in-depth against a contaminated operator/CI environment: it keeps the
+// argument allowlist authoritative. The pinned empty GOFLAGS also overrides any
+// value persisted in the default `go env` file; GOTOOLCHAIN=local forbids switching.
+func sandboxedGoEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env)+2)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GOFLAGS=") || strings.HasPrefix(kv, "GOENV=") || strings.HasPrefix(kv, "GOTOOLCHAIN=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "GOFLAGS=", "GOTOOLCHAIN=local")
 }
 
 // clip shortens s to at most max bytes, keeping head and tail (where compiler

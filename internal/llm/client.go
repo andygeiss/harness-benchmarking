@@ -110,25 +110,63 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(k
 		return nil, err
 	}
 
-	var (
-		content   strings.Builder
-		reasoning strings.Builder
-		toolCalls []ToolCall
-		finish    string
-		usage     Usage
-	)
-	sc := bufio.NewScanner(resp.Body)
+	st, err := readStream(resp.Body, onDelta)
+	if err != nil {
+		return nil, transient(fmt.Errorf("read stream: %w", err))
+	}
+	// A clean EOF that arrived before the [DONE] sentinel AND before any
+	// finish_reason means the body was cut mid-response: bufio.Scanner reports it as
+	// success, so without this check a half-generated turn would be accepted as
+	// complete. Treat it as a truncated read (transient) so the pass retries instead
+	// of acting on partial output. A stream that did reach a finish_reason kept its
+	// content, so a merely-missing trailing [DONE] frame is tolerated.
+	if !st.sawDone && st.finish == "" {
+		return nil, transient(fmt.Errorf("stream ended before [DONE] or a finish reason: response truncated"))
+	}
+
+	return &Response{
+		Choices: []Choice{{
+			Message: ResponseMessage{
+				Role:             RoleAssistant,
+				Content:          st.content,
+				ReasoningContent: st.reasoning,
+				ToolCalls:        st.toolCalls,
+			},
+			FinishReason: st.finish,
+		}},
+		Usage: st.usage,
+	}, nil
+}
+
+// streamState is the response assembled incrementally from SSE delta frames.
+type streamState struct {
+	content   string
+	reasoning string
+	toolCalls []ToolCall
+	finish    string
+	usage     Usage
+	sawDone   bool // the [DONE] sentinel was seen (the stream ended cleanly)
+}
+
+// readStream scans an SSE body into a streamState, invoking onDelta for each
+// fragment of reasoning and answer as it arrives. It stops at [DONE] (setting
+// sawDone) or at EOF; the caller treats an EOF before [DONE] as a truncated read.
+func readStream(body io.Reader, onDelta func(kind, text string)) (streamState, error) {
+	var content, reasoning strings.Builder
+	var st streamState
+	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64<<10), 4<<20) // tolerate long SSE lines
 	for sc.Scan() {
 		chunk, ok, done := parseFrame(sc.Text())
 		if done {
+			st.sawDone = true
 			break
 		}
 		if !ok {
 			continue
 		}
 		if chunk.Usage != nil {
-			usage = *chunk.Usage
+			st.usage = *chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -143,28 +181,15 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onDelta func(k
 			onDelta("content", ch.Delta.Content)
 		}
 		for _, tc := range ch.Delta.ToolCalls {
-			mergeToolCall(&toolCalls, tc)
+			mergeToolCall(&st.toolCalls, tc)
 		}
 		if ch.FinishReason != "" {
-			finish = ch.FinishReason
+			st.finish = ch.FinishReason
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return nil, transient(fmt.Errorf("read stream: %w", err))
-	}
-
-	return &Response{
-		Choices: []Choice{{
-			Message: ResponseMessage{
-				Role:             RoleAssistant,
-				Content:          content.String(),
-				ReasoningContent: reasoning.String(),
-				ToolCalls:        toolCalls,
-			},
-			FinishReason: finish,
-		}},
-		Usage: usage,
-	}, nil
+	st.content = content.String()
+	st.reasoning = reasoning.String()
+	return st, sc.Err()
 }
 
 // parseFrame extracts the JSON chunk from one SSE line. ok is false for lines to

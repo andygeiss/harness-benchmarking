@@ -91,12 +91,15 @@ func Go(root string, timeout time.Duration) Tool {
 	}
 }
 
-// checkGoArgs enforces the per-subcommand argument allowlist that turns the
-// subcommand check into an actual execution sandbox (see goFlags). For `mod` only
-// the read-only verbs in goModVerbs are accepted; for build/test/vet/fmt every
-// flag (an argument starting with "-") must be in goFlags, while positional
-// arguments — package paths and flag values — are always allowed. args[0] is the
-// already-validated subcommand.
+// checkGoArgs enforces the per-subcommand argument allowlist for the go tool.
+// Together with the scrubbed subprocess environment (see sandboxedGoEnv, which
+// strips GOFLAGS and friends so the same flags cannot be injected out of band) it
+// keeps an allowlisted `go` call from launching arbitrary programs or writing
+// outside the workspace — the allowlist guards the explicit args, the env scrub
+// guards the parallel GOFLAGS channel. For `mod` only the read-only verbs in
+// goModVerbs are accepted; for build/test/vet/fmt every flag (an argument starting
+// with "-") must be in goFlags, while positional arguments — package paths and flag
+// values — are always allowed. args[0] is the already-validated subcommand.
 func checkGoArgs(args []string) error {
 	if args[0] == "mod" {
 		if len(args) < 2 || !goModVerbs[args[1]] {
