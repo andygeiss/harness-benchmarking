@@ -270,6 +270,118 @@ func TestAnalyzeGoTest(t *testing.T) {
 	}
 }
 
+// TestPassingPackages locks the per-package verdict behind -elide-passing: it
+// mirrors the gate's rule (>=1 test pass, no failure, none dangling) at package
+// granularity, so only a genuinely green package is reported. The streams reuse the
+// gate's own cases — a clean pass, a test failure, a build error, an exit-0/no-test
+// package, and a dangling test — folded together in one run; only "pass" survives.
+func TestPassingPackages(t *testing.T) {
+	combined := strings.Join([]string{jsonPass, jsonFail, jsonBuildErr, jsonExitZeroNoTests, jsonDangling}, "\n")
+	s, err := foldGoTest(combined)
+	if err != nil {
+		t.Fatalf("foldGoTest: %v", err)
+	}
+	got := s.passingPackages()
+	if len(got) != 1 || !got["pass"] {
+		t.Fatalf("passingPackages = %v, want only {pass}", got)
+	}
+	for _, notPassing := range []string{"fail", "builderr", "initexit", "d"} {
+		if got[notPassing] {
+			t.Errorf("%q must not be reported passing", notPassing)
+		}
+	}
+}
+
+// TestImportToDir maps import paths to workspace-relative dirs against the module
+// root — the conversion -elide-passing uses to key reads by directory.
+func TestImportToDir(t *testing.T) {
+	cases := []struct {
+		module, pkg, wantDir string
+		wantOK               bool
+	}{
+		{"apikit", "apikit", ".", true},
+		{"apikit", "apikit/users", "users", true},
+		{"apikit", "apikit/api", "api", true},
+		{"apikit", "other/pkg", "", false},
+	}
+	for _, c := range cases {
+		dir, ok := importToDir(c.module, c.pkg)
+		if ok != c.wantOK || dir != c.wantDir {
+			t.Errorf("importToDir(%q,%q) = (%q,%v), want (%q,%v)", c.module, c.pkg, dir, ok, c.wantDir, c.wantOK)
+		}
+	}
+}
+
+// TestStatusForRouting pins that the status probe is built only for a `go test`
+// verify command; any other command yields nil, so elision is a no-op there.
+func TestStatusForRouting(t *testing.T) {
+	if StatusFor("/x", []string{"make", "check"}, time.Second) != nil {
+		t.Error("a non go-test command must yield a nil status probe")
+	}
+	if StatusFor("/x", []string{"go", "test", "./..."}, time.Second) == nil {
+		t.Error("a go test command must yield a status probe")
+	}
+}
+
+// TestReadFileElidesPassingSpec is the mechanical core of -elide-passing: once a
+// package is marked passing, read_file returns a short notice for its *_test.go (the
+// spec bytes never re-enter context) and counts the stub, while a non-test file, a
+// failing package's spec, and a nil ElideState are all read in full.
+func TestReadFileElidesPassingSpec(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite := func(rel, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("users/users_test.go", "package users // SPEC BODY")
+	mustWrite("users/users.go", "package users // IMPL BODY")
+	mustWrite("notes/notes_test.go", "package notes // SPEC BODY")
+
+	read := func(elide *ElideState, path string) string {
+		t.Helper()
+		raw, err := json.Marshal(map[string]string{"path": path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := ReadFile(dir, elide).Run(context.Background(), raw)
+		if err != nil {
+			t.Fatalf("read %q: %v", path, err)
+		}
+		return out
+	}
+
+	// A probe reporting only users green, exercised through Refresh.
+	elide := NewElideState(func(context.Context) (map[string]bool, error) {
+		return map[string]bool{"users": true}, nil
+	})
+	if err := elide.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	if out := read(elide, "users/users_test.go"); strings.Contains(out, "SPEC BODY") || !strings.Contains(out, "elided") {
+		t.Errorf("passing package's spec should be elided, got: %q", out)
+	}
+	if out := read(elide, "users/users.go"); !strings.Contains(out, "IMPL BODY") {
+		t.Errorf("a non-test file must never be elided, got: %q", out)
+	}
+	if out := read(elide, "notes/notes_test.go"); !strings.Contains(out, "SPEC BODY") {
+		t.Errorf("a failing package's spec must be read in full, got: %q", out)
+	}
+	if elide.Elided() != 1 {
+		t.Errorf("Elided() = %d, want 1 (only the users spec)", elide.Elided())
+	}
+
+	// A nil state disables elision: the spec is read in full, exactly like baseline.
+	if out := read(nil, "users/users_test.go"); !strings.Contains(out, "SPEC BODY") {
+		t.Errorf("nil ElideState must read the spec in full, got: %q", out)
+	}
+}
+
 // TestGoTestVerifierClosesExitHole is the end-to-end proof against the real
 // toolchain: a non-test file (allowed under -protect-tests) that exits the process
 // before tests run makes `go test` print "ok"/exit 0, yet the gate must reject it.

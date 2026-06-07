@@ -54,7 +54,7 @@ func TestRunCompletes(t *testing.T) {
 	reg.Register(tool.Done(func(_ context.Context) (bool, string, error) { return true, "", nil }))
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "do it", 3, true, nil, RunLog{MaxIters: 5}); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "do it", 3, true, nil, nil, RunLog{MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
 	}
 }
@@ -64,7 +64,7 @@ func TestRunCompletes(t *testing.T) {
 func TestRunStagnates(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, true, nil, RunLog{MaxIters: 10}); code != exitStagnated {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, true, nil, nil, RunLog{MaxIters: 10}); code != exitStagnated {
 		t.Fatalf("exit = %d, want exitStagnated (%d)", code, exitStagnated)
 	}
 }
@@ -74,7 +74,7 @@ func TestRunStagnates(t *testing.T) {
 func TestRunExhaustsBudget(t *testing.T) {
 	sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 0, true, nil, RunLog{MaxIters: 3}); code != exitBudget {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 0, true, nil, nil, RunLog{MaxIters: 3}); code != exitBudget {
 		t.Fatalf("exit = %d, want exitBudget (%d)", code, exitBudget)
 	}
 }
@@ -91,7 +91,7 @@ func TestRunFaultsWhenEveryPassErrors(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sess := newSession(srv, tool.NewRegistry())
 
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, true, nil, RunLog{MaxIters: 10}); code != exitFault {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), "", "sys", "go", 2, true, nil, nil, RunLog{MaxIters: 10}); code != exitFault {
 		t.Fatalf("exit = %d, want exitFault (%d)", code, exitFault)
 	}
 }
@@ -105,7 +105,7 @@ func TestRunWritesLog(t *testing.T) {
 	sess := newSession(scriptedServer(t, doneCall), reg)
 
 	logDir := t.TempDir()
-	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, true, nil, RunLog{Model: "test", Task: "examples/x/PROMPT.md", MaxIters: 5}); code != exitCompleted {
+	if code := run(context.Background(), discardLog(), sess, t.TempDir(), logDir, "sys", "do it", 3, true, nil, nil, RunLog{Model: "test", Task: "examples/x/PROMPT.md", MaxIters: 5}); code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted", code)
 	}
 	data, err := os.ReadFile(filepath.Join(logDir, "runs.jsonl"))
@@ -143,7 +143,7 @@ func TestRunCompletesViaProbe(t *testing.T) {
 	}
 
 	logDir := t.TempDir()
-	code := run(context.Background(), discardLog(), sess, work, logDir, "sys", "go", 3, true, verify, RunLog{MaxIters: 5})
+	code := run(context.Background(), discardLog(), sess, work, logDir, "sys", "go", 3, true, verify, nil, RunLog{MaxIters: 5})
 	if code != exitCompleted {
 		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
 	}
@@ -229,7 +229,7 @@ func TestRunWipesProgressWhenMemoryOff(t *testing.T) {
 				t.Fatal(err)
 			}
 			sess := newSession(scriptedServer(t, stopResponse), tool.NewRegistry())
-			run(context.Background(), discardLog(), sess, work, "", "sys", "go", 2, tc.memory, nil, RunLog{MaxIters: 10})
+			run(context.Background(), discardLog(), sess, work, "", "sys", "go", 2, tc.memory, nil, nil, RunLog{MaxIters: 10})
 
 			_, err := os.Stat(progress)
 			if tc.gone && !os.IsNotExist(err) {

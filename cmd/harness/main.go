@@ -82,6 +82,7 @@ func main() {
 	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
 	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
 	memory := flag.Bool("memory", true, "carry PROGRESS.md across passes as the agent's plan memory; -memory=false ablates it (drops the PROGRESS.md guidance from the built-in prompt and wipes PROGRESS.md before each pass) to measure resumption from the persisted code alone")
+	elidePassing := flag.Bool("elide-passing", false, "experimental: on read, stub a *_test.go spec once its package's tests pass, so a fresh pass does not re-spend its context budget re-reading verified specs (go-test verify only; see docs/stagnation.md)")
 
 	maxTokens := flag.Int("max-tokens", 32768, "max output tokens per call")
 	temp := flag.Float64("temp", 0.6, "temperature")
@@ -123,8 +124,17 @@ func main() {
 		os.Exit(exitFault)
 	}
 
+	// With -elide-passing, read_file stubs the specs of packages the verifier
+	// already certifies green; elide stays nil otherwise and reads are unchanged.
+	// StatusFor returns nil for a non-go-test verify command, so elision is a no-op
+	// there too.
+	var elide *tool.ElideState
+	if *elidePassing {
+		elide = tool.NewElideState(tool.StatusFor(absWork, strings.Fields(*verifyCmd), *cmdTimeout))
+	}
+
 	reg := tool.NewRegistry()
-	reg.Register(tool.ReadFile(absWork))
+	reg.Register(tool.ReadFile(absWork, elide))
 	reg.Register(tool.WriteFile(absWork, *protectTests))
 	reg.Register(tool.EditFile(absWork, *protectTests))
 	reg.Register(tool.ListDir(absWork))
@@ -156,6 +166,7 @@ func main() {
 		Model:             *model,
 		Task:              *promptPath,
 		Memory:            *memory,
+		ElidePassing:      *elidePassing,
 		CtxLimit:          *ctxLimit,
 		MaxIters:          *maxIters,
 		MaxSteps:          *maxSteps,
@@ -167,8 +178,8 @@ func main() {
 		RepetitionPenalty: *repPenalty,
 		PresencePenalty:   *presencePenalty,
 	}
-	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters, "memory", *memory)
-	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, *memory, verifier, rec))
+	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters, "memory", *memory, "elide_passing", *elidePassing)
+	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, *memory, verifier, elide, rec))
 }
 
 // run drives the Ralph loop: it re-runs the session with a fresh context each
@@ -183,7 +194,7 @@ func main() {
 // metrics) on exit. When memory is false the agent's plan memory is ablated:
 // PROGRESS.md is wiped before each pass, so the run measures how well the model
 // resumes from the persisted code alone rather than from its own notes.
-func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, logDir, system, prompt string, maxStale int, memory bool, verify tool.Verifier, rec RunLog) int {
+func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, logDir, system, prompt string, maxStale int, memory bool, verify tool.Verifier, elide *tool.ElideState, rec RunLog) int {
 	start := time.Now()
 	rec.Time = start.Format(time.RFC3339)
 	rec.Outcome = "fault"
@@ -192,6 +203,7 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 		defer func() {
 			rec.DurationSec = time.Since(start).Seconds()
 			rec.Metrics = total
+			rec.ElidedReads = elide.Elided()
 			if err := appendRunLog(logDir, rec); err != nil {
 				log.Warn("write run log", "err", err)
 			}
@@ -218,6 +230,11 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 			}
 		}
 		log.Info("ralph pass", "iter", iter, "max", rec.MaxIters)
+		// Refresh the elide set for this pass: read_file will stub the specs of
+		// packages that already pass. A nil elide (the default) is a no-op.
+		if err := elide.Refresh(ctx); err != nil {
+			log.Warn("elide: package-status probe failed; eliding nothing this pass", "iter", iter, "err", err)
+		}
 		res, err := sess.Run(ctx, system, prompt)
 		total.Add(res.Metrics)
 		rec.Passes = iter
@@ -263,20 +280,10 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 		// Stagnation guard: consecutive passes that leave the workspace
 		// byte-for-byte unchanged mean the model is stuck — a fresh context will
 		// only reproduce the same non-result, so stop instead of burning the
-		// remaining budget. A failed fingerprint is non-fatal: skip the check.
-		if ferr == nil {
-			stalled := stale.update(fp)
-			log.Debug("workspace fingerprint", "iter", iter, "stale", stale.count, "hash", fp)
-			if stalled {
-				if !anyClean {
-					log.Error("every pass errored and the workspace never changed; treating as a fault", "passes", stale.count, "iter", iter)
-					rec.Outcome = "fault"
-					return exitFault
-				}
-				log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale.count, "iter", iter)
-				rec.Outcome = "stagnated"
-				return exitStagnated
-			}
+		// remaining budget.
+		if outcome, code, stop := checkStagnation(log, &stale, fp, ferr, anyClean, iter); stop {
+			rec.Outcome = outcome
+			return code
 		}
 	}
 	if !anyClean {
@@ -287,6 +294,29 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 	log.Warn("reached max Ralph passes without completion", "max", rec.MaxIters)
 	rec.Outcome = "budget"
 	return exitBudget
+}
+
+// checkStagnation folds this pass's fingerprint into the stale tracker and decides
+// whether the run must stop. A failed fingerprint (ferr != nil) skips the check — a
+// fresh context will only reproduce the same non-result. If the workspace has gone
+// unchanged for the tracker's limit, the run stops: a fault when no pass ever ran
+// clean (every pass errored — an unreachable model, not a stuck one), otherwise
+// stagnated. stop=false means continue. Kept out of run to hold its complexity down.
+func checkStagnation(log *slog.Logger, stale *staleTracker, fp string, ferr error, anyClean bool, iter int) (outcome string, code int, stop bool) {
+	if ferr != nil {
+		return "", 0, false
+	}
+	stalled := stale.update(fp)
+	log.Debug("workspace fingerprint", "iter", iter, "stale", stale.count, "hash", fp)
+	if !stalled {
+		return "", 0, false
+	}
+	if !anyClean {
+		log.Error("every pass errored and the workspace never changed; treating as a fault", "passes", stale.count, "iter", iter)
+		return "fault", exitFault, true
+	}
+	log.Warn("workspace unchanged across consecutive passes; stopping", "passes", stale.count, "iter", iter)
+	return "stagnated", exitStagnated, true
 }
 
 // probeComplete is the outer-loop counterpart to the model calling done: when a

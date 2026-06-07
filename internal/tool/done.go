@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -103,12 +105,17 @@ type goTestEvent struct {
 	Output  string `json:"Output"`
 }
 
-// goTestSummary folds a -json event stream into the facts a verdict needs.
+// goTestSummary folds a -json event stream into the facts a verdict needs. The
+// pkgPass/pkgFail maps additionally track the verdict per package import path, so
+// the same fold can answer "which packages passed" for the -elide-passing read
+// optimization without a second parser that could drift from the gate's rule.
 type goTestSummary struct {
 	log     strings.Builder // reconstructed console output, including compiler errors
 	failed  bool            // any test-, package-, or build-level failure
 	passed  int             // test-level pass events (Test != "")
 	started map[string]bool // tests that emitted "run" but no terminal event yet
+	pkgPass map[string]int  // import path -> test-level pass events
+	pkgFail map[string]bool // import path -> a failure was seen
 }
 
 // add folds one event into the summary. A package-level pass/skip/fail carries an
@@ -123,12 +130,16 @@ func (s *goTestSummary) add(e goTestEvent) {
 	case "pass":
 		if e.Test != "" {
 			s.passed++
+			s.pkgPass[e.Package]++
 		}
 		delete(s.started, e.Package+"\x00"+e.Test)
 	case "skip":
 		delete(s.started, e.Package+"\x00"+e.Test)
 	case "fail", "build-fail":
 		s.failed = true
+		if e.Package != "" {
+			s.pkgFail[e.Package] = true
+		}
 		delete(s.started, e.Package+"\x00"+e.Test)
 	}
 }
@@ -158,10 +169,37 @@ func (s *goTestSummary) verdict() (ok bool, feedback string) {
 	}
 }
 
-// analyzeGoTest decides verification from a `go test -json` stream, tolerating
-// non-JSON lines (stderr, the trailing status note) by skipping them.
-func analyzeGoTest(out string) (bool, string, error) {
-	s := goTestSummary{started: make(map[string]bool)}
+// passingPackages returns the set of package import paths that passed by the same
+// rule verdict() applies to the whole run, at package granularity: at least one
+// test-level pass, no failure, and no test left unfinished. A build-failed package
+// emits no test-level pass, so it is excluded without special-casing. It backs the
+// -elide-passing read optimization and is never a gate.
+func (s *goTestSummary) passingPackages() map[string]bool {
+	dangling := make(map[string]bool)
+	for key := range s.started {
+		if pkg, _, found := strings.Cut(key, "\x00"); found {
+			dangling[pkg] = true
+		}
+	}
+	out := make(map[string]bool)
+	for pkg, passes := range s.pkgPass {
+		if passes > 0 && !s.pkgFail[pkg] && !dangling[pkg] {
+			out[pkg] = true
+		}
+	}
+	return out
+}
+
+// foldGoTest scans a `go test -json` stream into a goTestSummary, tolerating
+// non-JSON lines (stderr, the trailing status note) by skipping them. Shared by
+// the gate (analyzeGoTest) and the per-package status probe so both read the
+// stream the same way.
+func foldGoTest(out string) (goTestSummary, error) {
+	s := goTestSummary{
+		started: make(map[string]bool),
+		pkgPass: make(map[string]int),
+		pkgFail: make(map[string]bool),
+	}
 	sc := bufio.NewScanner(strings.NewReader(out))
 	sc.Buffer(make([]byte, 0, 64<<10), 4<<20) // tolerate long -json lines
 	for sc.Scan() {
@@ -173,8 +211,87 @@ func analyzeGoTest(out string) (bool, string, error) {
 		s.add(e)
 	}
 	if err := sc.Err(); err != nil {
-		return false, "", fmt.Errorf("read go test output: %w", err)
+		return s, fmt.Errorf("read go test output: %w", err)
+	}
+	return s, nil
+}
+
+// analyzeGoTest decides verification from a `go test -json` stream.
+func analyzeGoTest(out string) (bool, string, error) {
+	s, err := foldGoTest(out)
+	if err != nil {
+		return false, "", err
 	}
 	ok, feedback := s.verdict()
 	return ok, feedback, nil
+}
+
+// StatusFor returns the per-pass package-status probe used by the -elide-passing
+// read optimization. For a `go test …` verify command it reports which package
+// directories (relative to dir) currently pass — by the same -count=3 gate the
+// verifier runs — so ReadFile can stub the specs of already-green packages. For any
+// other verify command it returns nil and nothing is ever elided.
+func StatusFor(dir string, command []string, timeout time.Duration) func(context.Context) (map[string]bool, error) {
+	if len(command) < 2 || command[0] != "go" || command[1] != "test" {
+		return nil
+	}
+	patterns := command[2:]
+	return func(ctx context.Context) (map[string]bool, error) {
+		return passingDirs(ctx, dir, timeout, patterns)
+	}
+}
+
+// passingDirs runs the verifier's own `go test -json -count=3` over patterns in dir
+// and maps the import paths of the packages that passed to their directories
+// relative to dir (".", "users", …), via the module path in dir/go.mod. It assumes
+// one package per directory, which holds for the example tasks.
+func passingDirs(ctx context.Context, dir string, timeout time.Duration, patterns []string) (map[string]bool, error) {
+	args := append([]string{"test", "-json", "-count=3"}, patterns...)
+	out, _, err := runCmdFull(ctx, dir, timeout, "go", args...)
+	if err != nil {
+		return nil, err
+	}
+	s, err := foldGoTest(out)
+	if err != nil {
+		return nil, err
+	}
+	module, err := moduleImportPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	dirs := make(map[string]bool)
+	for pkg := range s.passingPackages() {
+		if rel, ok := importToDir(module, pkg); ok {
+			dirs[rel] = true
+		}
+	}
+	return dirs, nil
+}
+
+// importToDir maps a package import path to its directory relative to the module
+// root (the module path itself maps to "."), or reports false if pkg lies outside
+// the module.
+func importToDir(module, pkg string) (string, bool) {
+	if pkg == module {
+		return ".", true
+	}
+	if rel, ok := strings.CutPrefix(pkg, module+"/"); ok {
+		return rel, true
+	}
+	return "", false
+}
+
+// moduleImportPath reads the module path from the `module` directive of
+// dir/go.mod.
+func moduleImportPath(dir string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "module" {
+			return fields[1], nil
+		}
+	}
+	return "", fmt.Errorf("no module directive in %s", filepath.Join(dir, "go.mod"))
 }

@@ -12,8 +12,78 @@ import (
 
 const maxFileBytes = 256 << 10 // cap on read_file output
 
-// ReadFile returns a tool that reads a text file within root.
-func ReadFile(root string) Tool {
+// ElideState is the per-run state for the -elide-passing read optimization. It
+// holds a status probe reporting which package directories currently pass, the most
+// recent such set, and a count of the reads it has stubbed. ReadFile consults it to
+// return a short notice instead of an already-green package's *_test.go spec, so a
+// fresh Ralph pass does not re-spend its context budget re-reading specs the
+// verifier has already certified — the dominant cost behind the re-orientation
+// floor (see docs/stagnation.md). Disk is never touched; only the string returned
+// into the model's context shrinks, so the go tool and the done gate still compile
+// and run the real files. The set is refreshed between passes and only read during
+// one — single-goroutine throughout — so it needs no lock. A nil *ElideState
+// disables elision (the default), making ReadFile behaviour identical to baseline.
+type ElideState struct {
+	status  func(context.Context) (map[string]bool, error)
+	passing map[string]bool
+	elided  int
+}
+
+// NewElideState builds the elide state from a per-pass status probe (see
+// tool.StatusFor). A nil probe makes Refresh a no-op, so nothing is ever elided.
+func NewElideState(status func(context.Context) (map[string]bool, error)) *ElideState {
+	return &ElideState{status: status}
+}
+
+// Refresh recomputes the passing-package set for the upcoming pass. On a probe
+// error it clears the set (eliding nothing that pass) and returns the error. A nil
+// receiver or nil probe is a no-op.
+func (e *ElideState) Refresh(ctx context.Context) error {
+	if e == nil || e.status == nil {
+		return nil
+	}
+	dirs, err := e.status(ctx)
+	if err != nil {
+		e.passing = nil
+		return err
+	}
+	e.passing = dirs
+	return nil
+}
+
+// Elided reports how many reads have been stubbed over the run, for the run log.
+func (e *ElideState) Elided() int {
+	if e == nil {
+		return 0
+	}
+	return e.elided
+}
+
+// shouldElide reports whether a read of the test file at relPath should be stubbed
+// — relPath names a *_test.go whose package the last Refresh found passing — and
+// counts the stub. A nil receiver never elides.
+func (e *ElideState) shouldElide(relPath string) bool {
+	if e == nil || !isTestFile(relPath) {
+		return false
+	}
+	if e.passing[filepath.Dir(relPath)] {
+		e.elided++
+		return true
+	}
+	return false
+}
+
+// elidedSpecNotice is returned by read_file in place of a *_test.go spec whose
+// package already passes, under -elide-passing: short and factual, so the model
+// still gets a coherent reply while the spec's bytes do not re-enter the window.
+func elidedSpecNotice(path string) string {
+	return "[" + path + ": this package's tests already pass — spec elided to save context; no changes are needed here.]"
+}
+
+// ReadFile returns a tool that reads a text file within root. When elide is
+// non-nil and reports the file's package already passing, a *_test.go read returns
+// a short notice instead of the file's bytes (see ElideState); elide may be nil.
+func ReadFile(root string, elide *ElideState) Tool {
 	return Tool{
 		Name:        "read_file",
 		Description: "Read a UTF-8 text file and return its contents. Paths are relative to the workspace root.",
@@ -34,6 +104,9 @@ func ReadFile(root string) Tool {
 			abs, err := safeJoin(root, a.Path)
 			if err != nil {
 				return "", err
+			}
+			if elide.shouldElide(a.Path) {
+				return elidedSpecNotice(a.Path), nil
 			}
 			b, err := os.ReadFile(abs)
 			if err != nil {
