@@ -231,7 +231,7 @@ analysis sums the known keys. Rows in `runs.jsonl`; stderr in `logs/apikit-count
 
 ---
 
-## Part 5 — Measured: elide-on-pass clears the floor in 2 of 3 (2026-06-07)
+## Part 5 — Measured: elide-on-pass clears the floor in 4 of 7 (2026-06-07)
 
 The "elide-on-pass" lever was built behind `-elide-passing` (default off) and A/B-tested. When
 the verifier certifies a package green, `read_file` returns a one-line notice instead of that
@@ -250,10 +250,13 @@ baseline, built up over batches at the same session/server:**
 | baseline (A) | **0 / 10**      | ~23.5k | — |
 
 Every completed elide run reached full **5/5 including `api`** — the increment baseline never
-reaches. Across **all** 11k baseline runs ever recorded (these 10 plus the 8 in Part 1) the score
-is **0/18**; the elide arm's four completions are the first the harness has produced at this floor
-by any change other than raising the budget. **Fisher one-tailed on 4/7 vs 0/10 is p≈0.015** — past
-conventional significance.
+reaches. Across **every** recorded `apikit`@11k run with elision off — the seven interleaved A-arm
+runs plus all earlier ones in `runs.jsonl`, **24 in total** — the score is **0 completions**; the
+elide arm's four are the first the harness has produced at this floor by any change other than
+raising the budget. **Fisher one-tailed is p≈0.015** for 4/7 vs 0/10 (that n=10 pools three Part-4
+baselines with the seven interleaved A-arm runs); against the interleaved A arm alone — 4/7 vs 0/7 —
+it is **p≈0.035**, and one completion flipping to stagnation drops it to ≈0.05: past conventional
+significance, but **fragile at this n**.
 
 - **Mechanism confirmed.** Elision fired in every elide run (`elided_reads` 5–14), and
   `read_bytes`/pass fell **~21%** (baseline ~23.5k → elide ~18.6k). Completers cut load hardest;
@@ -275,3 +278,76 @@ could later fold into the end-of-pass probe). It elides only *specs* of green pa
 *implementation bodies* — a stacked `go doc`-signatures lever remains if the residual floor needs
 it. Rows in `runs.jsonl` (`elide_passing` / `elided_reads`); stderr in
 `logs/apikit-{elide,baseline}-*.log`.
+
+---
+
+## Part 6 — Measured: elide-on-pass replicates on `graphkit`, 6/6 vs 0/6 (2026-06-07)
+
+Part 5's evidence was `apikit` alone — the gap the audit flagged. `graphkit` is the second
+purpose-built substrate: six small packages (`graph` the core; the other five import it), one
+package per directory, a `go test ./...` gate — so it satisfies the lever's assumptions and tests
+whether the `apikit` signal generalises or was task-specific. Same protocol: A/B at `-ctx-limit
+11000`, interleaved (B,A,…), else identical (`-max-iters 300 -max-steps 60`), n=6 elide vs n=6
+baseline, same session/server.
+
+| arm | completed | read_bytes/pass | elided_reads/run | passes |
+|---|---|--:|--:|--:|
+| elide (B)    | **6 / 6** (100%) | ~17.9k | 10–29 (every run) | 4–9 |
+| baseline (A) | **0 / 6**        | ~18.8k | — | 4–8 |
+
+Every elide run reached full **6/6**; every baseline run stagnated at **3–4 of 6** (each wrote
+`graph`, `paths`, `traverse`; one also `toposort`), the documented floor, completing none. **Fisher
+one-tailed on 6/6 vs 0/6 is p≈0.0011** (1/C(12,6)) — and unlike `apikit`'s 4/7 it is **not
+fragile**: flipping one elide completion to stagnation (5/6 vs 0/6) still gives p≈0.008. The
+interleaving controls for server drift; the contrast holds across all six time-adjacent pairs.
+
+- **Generalises — more cleanly than `apikit`.** Two independently-built tasks now show the lever
+  clearing the floor: `apikit` 4/7 (p≈0.015, fragile) and `graphkit` 6/6 (p≈0.001, clean). Part 1's
+  "the mechanism generalises, the flip point does not" is now measured on both halves — same
+  mechanism, perfect separation here.
+- **The completion effect is stronger, the byte-share effect weaker.** `read_bytes`/pass fell only
+  **~5%** (18.8k → 17.9k), against `apikit`'s ~21% — yet completion went 0 → 6/6. The per-pass byte
+  proxy is the wrong lens when the arms travel different distances: baseline stalls early (few
+  reads), while elide *completers* run more **productive** passes (more reads total, but banking a
+  package each). The win is **compounding**, not raw byte reduction — `graphkit`'s six fine-grained,
+  cleanly-seamed packages let the model bank one green package at a time and stop re-paying for its
+  spec, a closer fit to the lever's intent than `apikit`'s monolithic `api` increment. So do not
+  read the lever's value off `read_bytes`/pass alone; the outcome is what moved.
+- **Same safe failure mode, none triggered.** No false completions — the gate ran the real specs
+  every pass. No elide run stagnated at all, so Part 5's residual-floor caveat (3/7 there) did not
+  recur on `graphkit` at this n.
+
+**Honest limits.** n=6 per arm; 6/6 vs 0/6 is perfect separation — striking, but twelve runs at one
+budget on one model. It does not show the lever is deterministic in general; it shows that on the
+two tasks built for this, a baseline floor of 0/24 (`apikit`) and 0/6 (`graphkit`) yields
+completions only with elision, now across both. The honest hard limit (an irreducible increment
+exceeding the full window) is untouched — `graphkit`'s increments simply sit well under it once
+green specs stop re-entering. Rows in `runs.jsonl` (`elide_passing` / `elided_reads`, `task` =
+`examples/graphkit/PROMPT.md`, 2026-06-07T20:22–21:38); stderr in
+`logs/graphkit-{elide,baseline}-*.log`.
+
+---
+
+## Part 7 — Promoted to built-in; the status probe folded into the gate (2026-06-07)
+
+With the lever validated on both substrates (Parts 5–6), `-elide-passing` was **removed as a flag and
+made unconditional**: spec elision is now the harness's default read-path behaviour, and the
+`elide_passing` run-log field is dropped (new rows carry only `elided_reads`). The two costs Part 5
+listed under "Limitations" are addressed:
+
+- **No extra `go test` per pass.** The standalone per-pass status probe (its own
+  `go test -json -count=3` to compute the passing set) is **gone**. `GoTestVerifier` now folds its
+  `-json` stream once and hands the passing package directories to `ElideState` via an `onPass` hook
+  (`passingDirsFrom` in `done.go`), so the done gate and the end-of-pass probe — which run anyway —
+  double as the status probe. Eliding adds zero test executions.
+- **Still un-gameable.** Folding does not weaken the gate: the verifier reads the real `*_test.go`
+  from disk every run, elision only shrinks the string `read_file` returns, and a non-`go test`
+  verify command never feeds the set (so elision is a no-op there). A false-green stays structurally
+  impossible.
+
+**Why drop the flag rather than default it on?** The design's asymmetry: elision is **safe by
+construction and either helps or is inert**, so an off-by-default knob was friction with little to
+weigh against. The `-memory` flag is kept because memory *changes outcomes both ways* and so wants an
+ablation toggle; elision does not. The baseline arms are already on record (Parts 1, 4–6), and
+re-adding a toggle is a small change if a future task ever needs to ablate it. What remains genuinely
+unbuilt is unchanged: the `go doc`-interface lever (Lever 2) and the soft-limit checkpoint (Lever 3).

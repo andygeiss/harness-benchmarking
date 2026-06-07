@@ -50,10 +50,13 @@ func Done(verify Verifier) Tool {
 // VerifierFor returns the verification gate for a parsed verify command. A
 // `go test …` command gets the strict GoTestVerifier, which confirms the spec's
 // tests actually ran and passed; any other command falls back to CommandVerifier,
-// which can only observe the process exit status.
-func VerifierFor(dir string, command []string, timeout time.Duration) Verifier {
+// which can only observe the process exit status. onPass, if non-nil, is forwarded
+// to the go-test gate and called after each run with the package directories that
+// passed (relative to dir), so spec elision shares the gate's single test
+// execution; a non-go-test command never calls it, so elision is a no-op there.
+func VerifierFor(dir string, command []string, timeout time.Duration, onPass func(map[string]bool)) Verifier {
 	if len(command) >= 2 && command[0] == "go" && command[1] == "test" {
-		return GoTestVerifier(dir, timeout, command[2:])
+		return GoTestVerifier(dir, timeout, command[2:], onPass)
 	}
 	return CommandVerifier(dir, command, timeout)
 }
@@ -86,14 +89,26 @@ func CommandVerifier(dir string, command []string, timeout time.Duration) Verifi
 // randomized map iteration — gets three independent chances to fail the gate. That
 // is a probabilistic guard against non-determinism, not a guarantee: a low-rate
 // flake can still pass all three rolls (see the "Passes" invariant in CLAUDE.md).
-func GoTestVerifier(dir string, timeout time.Duration, patterns []string) Verifier {
+//
+// onPass, if non-nil, is called after each run with the package directories that
+// passed (see passingDirsFrom), feeding the spec-elision read set from this same
+// execution so no separate per-pass status probe is needed.
+func GoTestVerifier(dir string, timeout time.Duration, patterns []string, onPass func(map[string]bool)) Verifier {
 	return func(ctx context.Context) (bool, string, error) {
 		args := append([]string{"test", "-json", "-count=3"}, patterns...)
 		out, _, err := runCmdFull(ctx, dir, timeout, "go", args...)
 		if err != nil {
 			return false, "", err
 		}
-		return analyzeGoTest(out)
+		s, err := foldGoTest(out)
+		if err != nil {
+			return false, "", err
+		}
+		if onPass != nil {
+			onPass(passingDirsFrom(dir, &s))
+		}
+		ok, feedback := s.verdict()
+		return ok, feedback, nil
 	}
 }
 
@@ -107,8 +122,8 @@ type goTestEvent struct {
 
 // goTestSummary folds a -json event stream into the facts a verdict needs. The
 // pkgPass/pkgFail maps additionally track the verdict per package import path, so
-// the same fold can answer "which packages passed" for the -elide-passing read
-// optimization without a second parser that could drift from the gate's rule.
+// the same fold can answer "which packages passed" for spec elision
+// without a second parser that could drift from the gate's rule.
 type goTestSummary struct {
 	log     strings.Builder // reconstructed console output, including compiler errors
 	failed  bool            // any test-, package-, or build-level failure
@@ -172,8 +187,8 @@ func (s *goTestSummary) verdict() (ok bool, feedback string) {
 // passingPackages returns the set of package import paths that passed by the same
 // rule verdict() applies to the whole run, at package granularity: at least one
 // test-level pass, no failure, and no test left unfinished. A build-failed package
-// emits no test-level pass, so it is excluded without special-casing. It backs the
-// -elide-passing read optimization and is never a gate.
+// emits no test-level pass, so it is excluded without special-casing. It backs spec
+// elision (see passingDirsFrom) and is never a gate.
 func (s *goTestSummary) passingPackages() map[string]bool {
 	dangling := make(map[string]bool)
 	for key := range s.started {
@@ -226,38 +241,18 @@ func analyzeGoTest(out string) (bool, string, error) {
 	return ok, feedback, nil
 }
 
-// StatusFor returns the per-pass package-status probe used by the -elide-passing
-// read optimization. For a `go test …` verify command it reports which package
-// directories (relative to dir) currently pass — by the same -count=3 gate the
-// verifier runs — so ReadFile can stub the specs of already-green packages. For any
-// other verify command it returns nil and nothing is ever elided.
-func StatusFor(dir string, command []string, timeout time.Duration) func(context.Context) (map[string]bool, error) {
-	if len(command) < 2 || command[0] != "go" || command[1] != "test" {
-		return nil
-	}
-	patterns := command[2:]
-	return func(ctx context.Context) (map[string]bool, error) {
-		return passingDirs(ctx, dir, timeout, patterns)
-	}
-}
-
-// passingDirs runs the verifier's own `go test -json -count=3` over patterns in dir
-// and maps the import paths of the packages that passed to their directories
-// relative to dir (".", "users", …), via the module path in dir/go.mod. It assumes
-// one package per directory, which holds for the example tasks.
-func passingDirs(ctx context.Context, dir string, timeout time.Duration, patterns []string) (map[string]bool, error) {
-	args := append([]string{"test", "-json", "-count=3"}, patterns...)
-	out, _, err := runCmdFull(ctx, dir, timeout, "go", args...)
-	if err != nil {
-		return nil, err
-	}
-	s, err := foldGoTest(out)
-	if err != nil {
-		return nil, err
-	}
+// passingDirsFrom maps the packages a folded summary reports passing — by the
+// gate's own rule (see passingPackages) — to their directories relative to dir,
+// resolved through the module path in dir/go.mod (the module path itself maps to
+// "."). It assumes one importable package per directory, which Go enforces. A
+// missing or module-less go.mod yields an empty set rather than an error, so
+// elision simply does nothing until a module exists. Backs spec elision; the result
+// is never a gate. Folding a summary the verifier already built is what lets the
+// completion run double as the per-package status probe.
+func passingDirsFrom(dir string, s *goTestSummary) map[string]bool {
 	module, err := moduleImportPath(dir)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	dirs := make(map[string]bool)
 	for pkg := range s.passingPackages() {
@@ -265,7 +260,7 @@ func passingDirs(ctx context.Context, dir string, timeout time.Duration, pattern
 			dirs[rel] = true
 		}
 	}
-	return dirs, nil
+	return dirs
 }
 
 // importToDir maps a package import path to its directory relative to the module

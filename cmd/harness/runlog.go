@@ -30,8 +30,7 @@ type RunLog struct {
 	MinP              float64  `json:"min_p"`
 	RepetitionPenalty float64  `json:"repetition_penalty"`
 	PresencePenalty   float64  `json:"presence_penalty"`
-	ElidePassing      bool     `json:"elide_passing"` // was the -elide-passing read optimization on
-	ElidedReads       int      `json:"elided_reads"`  // *_test.go reads stubbed because the package already passed
+	ElidedReads       int      `json:"elided_reads"` // *_test.go reads stubbed because the package's tests already passed
 	agent.Metrics              // model_calls, tool_calls, tool_counts, read_bytes, token counts, server_time_sec — flattened
 }
 

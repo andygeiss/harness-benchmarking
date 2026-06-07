@@ -251,9 +251,16 @@ wall. Completing under a fixed window instead needs, per pass, a **bounded worki
 (the slice a step needs fits the window), **cheap loading** of it, and **durable,
 monotonic progress** — and the working set must be bounded by the *interface* a step
 touches, not the *implementation* behind it (`api` needs four signatures, not four files).
-That is how bounded passes compose into an unbounded task. The full mechanism — and a
-minimal, not-yet-built fix (a cheap pass-start digest, `go doc` interfaces, a soft-limit
-checkpoint) — is in [docs/stagnation.md](docs/stagnation.md).
+That is how bounded passes compose into an unbounded task. The full mechanism — and the one
+lever that moves it — is in [docs/stagnation.md](docs/stagnation.md). The proposed pass-start
+digest was built, A/B-tested, and reverted (null); what works is a now-built-in read-boundary elision
+that stubs a spec once its package verifies, so a fresh pass cannot re-spend its budget re-reading
+already-satisfied specs — fed by the verifier the loop already runs, so it adds no test execution. At `apikit`@11k it is the first change other
+than raising the budget to complete the task — **4/7 runs vs 0 across every recorded baseline**
+(Fisher p≈0.015, though fragile at this n) — and it **replicates on a second task, `graphkit`@11k,
+6/6 vs 0/6** (p≈0.001, clean separation). It raises completion *probability* rather than guaranteeing
+it (3/7 `apikit` runs still stagnate; `graphkit` did not, at n=6). The proposed `go doc`-interface
+and soft-limit-checkpoint levers remain unbuilt.
 
 ## Code quality is a separate axis
 

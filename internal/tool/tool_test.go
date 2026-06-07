@@ -373,18 +373,53 @@ func TestImportToDir(t *testing.T) {
 	}
 }
 
-// TestStatusForRouting pins that the status probe is built only for a `go test`
-// verify command; any other command yields nil, so elision is a no-op there.
-func TestStatusForRouting(t *testing.T) {
-	if StatusFor("/x", []string{"make", "check"}, time.Second) != nil {
-		t.Error("a non go-test command must yield a nil status probe")
+// TestVerifierFeedsPassingDirs proves spec elision is fed from the gate's own run
+// (GoTestVerifier's onPass), at directory granularity, and only for a `go test`
+// command — a non-test verify command routes to the exit-status verifier and never
+// feeds the set, so elision is a no-op there. This is the guarantee that lets the
+// completion run double as the per-package status probe (no separate test run).
+func TestVerifierFeedsPassingDirs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles and runs go test")
 	}
-	if StatusFor("/x", []string{"go", "test", "./..."}, time.Second) == nil {
-		t.Error("a go test command must yield a status probe")
+	dir := t.TempDir()
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module ef\n\ngo 1.26\n")
+	write("lib/lib_test.go", "package lib\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) {}\n")
+
+	var got map[string]bool
+	called := false
+	sink := func(dirs map[string]bool) { called, got = true, dirs }
+
+	// `go test` feeds the set: lib passes, mapped to its directory relative to root.
+	if ok, out, err := VerifierFor(dir, []string{"go", "test", "./..."}, time.Minute, sink)(context.Background()); err != nil {
+		t.Fatalf("go test verify: %v\n%s", err, out)
+	} else if !ok {
+		t.Fatalf("the passing spec should verify; got ok=false:\n%s", out)
+	}
+	if !called || len(got) != 1 || !got["lib"] {
+		t.Errorf("onPass should report {lib:true}; called=%v got=%v", called, got)
+	}
+
+	// A non-go-test command routes to the exit-status verifier and never feeds the set.
+	called = false
+	if _, _, err := VerifierFor(dir, []string{"go", "vet", "./..."}, time.Minute, sink)(context.Background()); err != nil {
+		t.Fatalf("go vet verify: %v", err)
+	}
+	if called {
+		t.Error("a non go-test verify command must not feed the elide set")
 	}
 }
 
-// TestReadFileElidesPassingSpec is the mechanical core of -elide-passing: once a
+// TestReadFileElidesPassingSpec is the mechanical core of spec elision: once a
 // package is marked passing, read_file returns a short notice for its *_test.go (the
 // spec bytes never re-enter context) and counts the stub, while a non-test file, a
 // failing package's spec, and a nil ElideState are all read in full.
@@ -416,13 +451,9 @@ func TestReadFileElidesPassingSpec(t *testing.T) {
 		return out
 	}
 
-	// A probe reporting only users green, exercised through Refresh.
-	elide := NewElideState(func(context.Context) (map[string]bool, error) {
-		return map[string]bool{"users": true}, nil
-	})
-	if err := elide.Refresh(context.Background()); err != nil {
-		t.Fatalf("refresh: %v", err)
-	}
+	// The verifier reports only users green; ReadFile elides that package's spec.
+	elide := NewElideState()
+	elide.Update(map[string]bool{"users": true})
 
 	if out := read(elide, "users/users_test.go"); strings.Contains(out, "SPEC BODY") || !strings.Contains(out, "elided") {
 		t.Errorf("passing package's spec should be elided, got: %q", out)
@@ -460,7 +491,7 @@ func TestGoTestVerifierClosesExitHole(t *testing.T) {
 	write("go.mod", "module probe\n\ngo 1.26\n")
 	write("p_test.go", "package p\n\nimport \"testing\"\n\nfunc TestSpec(t *testing.T) {}\n")
 
-	verify := GoTestVerifier(dir, time.Minute, []string{"./..."})
+	verify := GoTestVerifier(dir, time.Minute, []string{"./..."}, nil)
 
 	// An honest passing spec must verify.
 	ok, out, err := verify(context.Background())
@@ -506,7 +537,7 @@ func TestGoTestVerifierRunsRepeatedly(t *testing.T) {
 	// fail on run 2. A single execution would never observe the failure.
 	write("p_test.go", "package p\n\nimport \"testing\"\n\nvar calls int\n\nfunc TestFlaky(t *testing.T) {\n\tcalls++\n\tif calls >= 2 {\n\t\tt.Fatalf(\"deterministic fail on run %d\", calls)\n\t}\n}\n")
 
-	ok, out, err := GoTestVerifier(dir, time.Minute, []string{"./..."})(context.Background())
+	ok, out, err := GoTestVerifier(dir, time.Minute, []string{"./..."}, nil)(context.Background())
 	if err != nil {
 		t.Fatalf("verify: %v\n%s", err, out)
 	}
@@ -539,14 +570,14 @@ func TestVerifierForRouting(t *testing.T) {
 	ctx := context.Background()
 
 	// `go test` routes to the strict verifier: zero tests actually ran, so reject.
-	if ok, _, err := VerifierFor(dir, []string{"go", "test", "./..."}, time.Minute)(ctx); err != nil {
+	if ok, _, err := VerifierFor(dir, []string{"go", "test", "./..."}, time.Minute, nil)(ctx); err != nil {
 		t.Fatalf("go test verify: %v", err)
 	} else if ok {
 		t.Error("go test route should use the strict gate and reject a zero-test build")
 	}
 
 	// `go vet` routes to the exit-status fallback: the tree vets clean, exit 0 => ok.
-	if ok, _, err := VerifierFor(dir, []string{"go", "vet", "./..."}, time.Minute)(ctx); err != nil {
+	if ok, _, err := VerifierFor(dir, []string{"go", "vet", "./..."}, time.Minute, nil)(ctx); err != nil {
 		t.Fatalf("go vet verify: %v", err)
 	} else if !ok {
 		t.Error("non-test route should trust a clean exit (ok=true)")
@@ -557,7 +588,7 @@ func TestVerifierForRouting(t *testing.T) {
 	bad := t.TempDir()
 	write(bad, "go.mod", "module bad\n\ngo 1.26\n")
 	write(bad, "bad.go", "package p\n\nimport \"fmt\"\n\nfunc Bad() { fmt.Printf(\"%d\", \"x\") }\n")
-	if ok, _, err := VerifierFor(bad, []string{"go", "vet", "./..."}, time.Minute)(ctx); err != nil {
+	if ok, _, err := VerifierFor(bad, []string{"go", "vet", "./..."}, time.Minute, nil)(ctx); err != nil {
 		t.Fatalf("go vet (bad) verify: %v", err)
 	} else if ok {
 		t.Error("fallback must report ok=false when go vet finds an issue (exit 1)")

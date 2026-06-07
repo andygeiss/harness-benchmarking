@@ -82,7 +82,6 @@ func main() {
 	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
 	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
 	memory := flag.Bool("memory", true, "carry PROGRESS.md across passes as the agent's plan memory; -memory=false ablates it (drops the PROGRESS.md guidance from the built-in prompt and wipes PROGRESS.md before each pass) to measure resumption from the persisted code alone")
-	elidePassing := flag.Bool("elide-passing", false, "experimental: on read, stub a *_test.go spec once its package's tests pass, so a fresh pass does not re-spend its context budget re-reading verified specs (go-test verify only; see docs/stagnation.md)")
 
 	maxTokens := flag.Int("max-tokens", 32768, "max output tokens per call")
 	temp := flag.Float64("temp", 0.6, "temperature")
@@ -124,14 +123,13 @@ func main() {
 		os.Exit(exitFault)
 	}
 
-	// With -elide-passing, read_file stubs the specs of packages the verifier
-	// already certifies green; elide stays nil otherwise and reads are unchanged.
-	// StatusFor returns nil for a non-go-test verify command, so elision is a no-op
-	// there too.
-	var elide *tool.ElideState
-	if *elidePassing {
-		elide = tool.NewElideState(tool.StatusFor(absWork, strings.Fields(*verifyCmd), *cmdTimeout))
-	}
+	// read_file stubs the specs of packages the verifier has certified green, so a
+	// fresh pass does not re-spend its budget re-reading satisfied specs (the
+	// re-orientation floor; see docs/stagnation.md). The set is fed by the verifier
+	// below — which runs anyway for the done gate and the end-of-pass probe — so no
+	// extra test run is needed; a non-go-test verify command never feeds it, leaving
+	// reads unchanged.
+	elide := tool.NewElideState()
 
 	reg := tool.NewRegistry()
 	reg.Register(tool.ReadFile(absWork, elide))
@@ -139,7 +137,7 @@ func main() {
 	reg.Register(tool.EditFile(absWork, *protectTests))
 	reg.Register(tool.ListDir(absWork))
 	reg.Register(tool.Go(absWork, *cmdTimeout))
-	verifier := tool.VerifierFor(absWork, strings.Fields(*verifyCmd), *cmdTimeout)
+	verifier := tool.VerifierFor(absWork, strings.Fields(*verifyCmd), *cmdTimeout, elide.Update)
 	reg.Register(tool.Done(verifier))
 
 	client := llm.NewClient(*endpoint, *model)
@@ -166,7 +164,6 @@ func main() {
 		Model:             *model,
 		Task:              *promptPath,
 		Memory:            *memory,
-		ElidePassing:      *elidePassing,
 		CtxLimit:          *ctxLimit,
 		MaxIters:          *maxIters,
 		MaxSteps:          *maxSteps,
@@ -178,7 +175,7 @@ func main() {
 		RepetitionPenalty: *repPenalty,
 		PresencePenalty:   *presencePenalty,
 	}
-	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters, "memory", *memory, "elide_passing", *elidePassing)
+	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters, "memory", *memory)
 	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, *memory, verifier, elide, rec))
 }
 
@@ -230,11 +227,6 @@ func run(ctx context.Context, log *slog.Logger, sess *agent.Session, workdir, lo
 			}
 		}
 		log.Info("ralph pass", "iter", iter, "max", rec.MaxIters)
-		// Refresh the elide set for this pass: read_file will stub the specs of
-		// packages that already pass. A nil elide (the default) is a no-op.
-		if err := elide.Refresh(ctx); err != nil {
-			log.Warn("elide: package-status probe failed; eliding nothing this pass", "iter", iter, "err", err)
-		}
 		res, err := sess.Run(ctx, system, prompt)
 		total.Add(res.Metrics)
 		rec.Passes = iter

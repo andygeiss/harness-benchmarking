@@ -12,43 +12,37 @@ import (
 
 const maxFileBytes = 256 << 10 // cap on read_file output
 
-// ElideState is the per-run state for the -elide-passing read optimization. It
-// holds a status probe reporting which package directories currently pass, the most
-// recent such set, and a count of the reads it has stubbed. ReadFile consults it to
-// return a short notice instead of an already-green package's *_test.go spec, so a
-// fresh Ralph pass does not re-spend its context budget re-reading specs the
-// verifier has already certified — the dominant cost behind the re-orientation
-// floor (see docs/stagnation.md). Disk is never touched; only the string returned
-// into the model's context shrinks, so the go tool and the done gate still compile
-// and run the real files. The set is refreshed between passes and only read during
-// one — single-goroutine throughout — so it needs no lock. A nil *ElideState
-// disables elision (the default), making ReadFile behaviour identical to baseline.
+// ElideState is the per-run state for spec elision. It holds the set of package
+// directories the verifier most recently certified green and a count of the reads
+// it has stubbed. ReadFile consults it to return a short notice instead of an
+// already-green package's *_test.go spec, so a fresh Ralph pass does not re-spend
+// its context budget re-reading specs the verifier has already certified — the
+// dominant cost behind the re-orientation floor (see docs/stagnation.md). Disk is
+// never touched; only the string returned into the model's context shrinks, so the
+// go tool and the done gate still compile and run the real files. The set is fed by
+// the verifier (GoTestVerifier's onPass — which runs anyway, for the done gate and
+// the end-of-pass probe, so elision adds no test execution) and only read during a
+// pass: single-goroutine throughout, so it needs no lock. A nil *ElideState elides
+// nothing, the behaviour ReadFile falls back to in tests.
 type ElideState struct {
-	status  func(context.Context) (map[string]bool, error)
 	passing map[string]bool
 	elided  int
 }
 
-// NewElideState builds the elide state from a per-pass status probe (see
-// tool.StatusFor). A nil probe makes Refresh a no-op, so nothing is ever elided.
-func NewElideState(status func(context.Context) (map[string]bool, error)) *ElideState {
-	return &ElideState{status: status}
+// NewElideState builds an empty elide state. It elides nothing until Update is fed
+// a passing-package set (wired to the verifier via GoTestVerifier's onPass hook).
+func NewElideState() *ElideState {
+	return &ElideState{}
 }
 
-// Refresh recomputes the passing-package set for the upcoming pass. On a probe
-// error it clears the set (eliding nothing that pass) and returns the error. A nil
-// receiver or nil probe is a no-op.
-func (e *ElideState) Refresh(ctx context.Context) error {
-	if e == nil || e.status == nil {
-		return nil
-	}
-	dirs, err := e.status(ctx)
-	if err != nil {
-		e.passing = nil
-		return err
+// Update replaces the passing-package set with the directories (relative to the
+// workspace root) the verifier just found green. Replacing rather than merging lets
+// a package that regressed drop back out. A nil receiver is a no-op.
+func (e *ElideState) Update(dirs map[string]bool) {
+	if e == nil {
+		return
 	}
 	e.passing = dirs
-	return nil
 }
 
 // Elided reports how many reads have been stubbed over the run, for the run log.
@@ -60,7 +54,7 @@ func (e *ElideState) Elided() int {
 }
 
 // shouldElide reports whether a read of the test file at relPath should be stubbed
-// — relPath names a *_test.go whose package the last Refresh found passing — and
+// — relPath names a *_test.go whose package the verifier last found passing — and
 // counts the stub. A nil receiver never elides.
 func (e *ElideState) shouldElide(relPath string) bool {
 	if e == nil || !isTestFile(relPath) {
@@ -74,8 +68,8 @@ func (e *ElideState) shouldElide(relPath string) bool {
 }
 
 // elidedSpecNotice is returned by read_file in place of a *_test.go spec whose
-// package already passes, under -elide-passing: short and factual, so the model
-// still gets a coherent reply while the spec's bytes do not re-enter the window.
+// package already passes: short and factual, so the model still gets a coherent
+// reply while the spec's bytes do not re-enter the window.
 func elidedSpecNotice(path string) string {
 	return "[" + path + ": this package's tests already pass — spec elided to save context; no changes are needed here.]"
 }
