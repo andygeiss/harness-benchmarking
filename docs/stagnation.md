@@ -184,12 +184,47 @@ a model that reads selectively. This is the doc's own caveat, now demonstrated: 
 cheap-loading levers "rely on a weak model *using* the injected context well," and it does
 not. Raw rows in `runs.jsonl` (`digest` field) and `logs/apikit-11k-*.log`; n=3, ordinal.
 
-### Instrumentation now in `runs.jsonl`
-The load:act split that the Lever-1 analysis above hand-parsed from the stderr `tool`
-lines is now logged directly: every run records `tool_counts` (calls per tool name) and
-`read_bytes` (bytes `read_file` returned into the model's context) in `runs.jsonl`
-(`agent.Metrics`, agent-invisible). So the *count-based* load:act ratio
-(`read_file`+`list_dir` vs `write_file`+`edit_file`) and the *token-weighted* read share
-(`read_bytes` ÷ `prompt_tokens`) are available per run without re-parsing logs — the
-discriminating metric for the next A/B (e.g. the proposed read-path elision), where reads
-are expected to stay frequent while their token cost falls.
+---
+
+## Part 4 — Measured: load:act baseline (2026-06-07)
+
+The Part 3 analysis hand-parsed the load:act split from the stderr `tool` lines. That split is
+now logged directly: every run records `tool_counts` (calls per tool name) and `read_bytes`
+(bytes `read_file` returned into the model's context) in `runs.jsonl` (`agent.Metrics`,
+agent-invisible). So the *count-based* load:act ratio (`read_file`+`list_dir` vs
+`write_file`+`edit_file`) and the *token-weighted* load (`read_bytes`/pass against the window)
+are readable per run without re-parsing logs.
+
+This records the **baseline arm** of the proposed read-path-elision A/B: the current harness, no
+elision, `apikit` at `-ctx-limit 11000` (`-max-iters 300 -max-steps 60`, else default), n=3. All
+three **stagnated at 4 passes, 3/5 packages** — `health`, `users`, `tasks` green; `notes` and
+`api` never written (the documented floor, `api` reached by none):
+
+| run | read_file | list_dir | write_file | edit_file | read_bytes |
+|---|--:|--:|--:|--:|--:|
+| 1 | 35 | 24 | 4 | 1 | 93,048 |
+| 2 | 36 | 24 | 4 | 2 | 88,164 |
+| 3 | 36 | 25 | 4 | 0 | 96,123 |
+
+Per pass (mean of 3):
+
+- **load:act op ratio** (read+list)/(write+edit) = **~12:1** (11.8 / 10.0 / 15.3) — ~12 loading
+  ops per acting op.
+- ~8.9 `read_file`, ~6.1 `list_dir`, ~1.25 acts.
+- **`read_bytes` ≈ 23.1 KB/pass ≈ ~5.8k tokens ≈ ~52% of the 11k window**, spent re-reading files
+  *before any code is written* — Part 1's mechanism as a logged number, not a hand-parse.
+- `read_bytes`/pass (23.1 KB) **exceeds the whole spec set** (15,139 B: health 936 + users 4745 +
+  tasks 3693 + notes 3725 + api 2040), so each pass re-loads all five specs *plus* ~8 KB of
+  already-done implementations. The re-sweep is real and cross-pass.
+
+**What it sets up.** The three green specs total **9,374 B** (health+users+tasks). Eliding them at
+the `read_file` return path once their package verifies (the "elide-on-pass" lever) projects to
+cut `read_bytes`/pass from ~23.1 KB to ~13.7 KB — freeing **~2.3k tokens/pass** of the 11k budget,
+ramping as packages go green. That is the number the B arm must move, and the kill criterion reads
+straight off `read_bytes`: revert only if completion stays 0/3 **and** the token-weighted read
+share does not fall.
+
+*Incidental:* `recordTool` counts *attempted* calls by name, so run 2's map carries two malformed
+keys (`go\n<parameter=args`, `go build ./...\n</parameter`) — the model occasionally emits broken
+tool-call syntax (the unknown-tool recovery path). Rare (2 of 213 calls across the three runs); the
+analysis sums the known keys. Rows in `runs.jsonl`; stderr in `logs/apikit-counters-{1,2,3}.log`.
