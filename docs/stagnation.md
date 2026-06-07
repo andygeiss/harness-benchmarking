@@ -241,32 +241,33 @@ Part 3 showed is immovable), but the spec's bytes do not re-enter the window. Di
 the `go` tool and the done gate still compile and run the real files, so a false-green is
 structurally impossible (the gate reads the real `*_test.go`, never the stub).
 
-**A/B, `apikit` @ `-ctx-limit 11000`, n=3 each, interleaved (B,A,B,A,B,A), else identical:**
+**A/B, `apikit` @ `-ctx-limit 11000`, interleaved (B,A,…), else identical — n=7 elide vs n=10
+baseline, built up over batches at the same session/server:**
 
-| arm | completed | passes | elided_reads | read_bytes/pass |
-|---|---|--:|--:|--:|
-| elide (B)    | **2 / 3** | 4, 5, 6 | 7, 14, 5 | ~16.7k, ~16.2k, ~20.7k |
-| baseline (A) | 0 / 3     | 8, 5, 4 | 0        | ~22.9k, ~23.4k, ~21.5k |
+| arm | completed | read_bytes/pass | elided_reads/run |
+|---|---|--:|--:|
+| elide (B)    | **4 / 7** (57%) | ~18.6k | 5–14 (fired every run) |
+| baseline (A) | **0 / 10**      | ~23.5k | — |
 
-Both completed elide runs reached full **5/5 including `api`** — the increment baseline never
-reaches. Across **all** 11k baseline runs ever recorded (these 6 — the 3 here plus the 3 in
-Part 4 — and the 8 in Part 1) the score is **0/14**; the elide arm's two completions are the first
-the harness has produced at this floor by any change other than raising the budget.
+Every completed elide run reached full **5/5 including `api`** — the increment baseline never
+reaches. Across **all** 11k baseline runs ever recorded (these 10 plus the 8 in Part 1) the score
+is **0/18**; the elide arm's four completions are the first the harness has produced at this floor
+by any change other than raising the budget. **Fisher one-tailed on 4/7 vs 0/10 is p≈0.015** — past
+conventional significance.
 
-- **Mechanism confirmed.** Elision fired in every elide run (`elided_reads` 7 / 14 / 5), and
-  `read_bytes`/pass fell **~22%** (baseline ~22.9k → elide ~17.9k). The two completers cut load
-  hardest (~16.5k/pass); the one that stagnated elided least (5) and stayed baseline-like.
-- **Kill criterion met the "pursue" side.** It was: revert iff completion stays 0/3 *and*
-  read-share does not fall. Completion went **0 → 2/3** and read-share fell — so keep it.
+- **Mechanism confirmed.** Elision fired in every elide run (`elided_reads` 5–14), and
+  `read_bytes`/pass fell **~21%** (baseline ~23.5k → elide ~18.6k). Completers cut load hardest;
+  the stagnating elide runs elided least and stayed baseline-like.
+- **Kill criterion → pursue.** It was: revert iff completion stays 0/3 *and* read-share does not
+  fall. Completion went **0 → 4/7** and read-share fell — so keep it.
 
-**Honest limits.** n=3 is suggestive, not conclusive: Fisher one-tailed on 2/3 vs 0/6 is
-**p≈0.08** (≈0.02 folding in the historical 0/8, though that mixes sessions). It is **not a
-deterministic fix** — 1/3 elide runs still stagnated, matching the prediction that elision raises
-the completion *probability*, not a guarantee. The failure mode is **safe**: the stagnated elide
-run ended cleanly, never falsely completing or breaking. So Part 1 / Part 3's "no harness change
-clears the floor for this model" is **updated, not overturned**: a mechanical read-path elision
-clears it in 2 of 3 runs — the cheap-loading idea works once it acts on what the budget is actually
-spent on (spec *bytes* at the read boundary), the half Lever 1 missed.
+**Honest limits.** Significant (p≈0.015) but **not a deterministic fix**: 3/7 elide runs still
+stagnated, so the lever raises the completion *probability* (~57% here), it does not guarantee
+completion — matching the prediction that it helps without eliminating the floor. The failure mode
+is **safe**: a stagnating elide run ends cleanly, never falsely completing or breaking. So Part 1 /
+Part 3's "no harness change clears the floor for this model" is **updated, not overturned**: a
+mechanical read-path elision clears it ~4 times in 7 — the cheap-loading idea works once it acts on
+what the budget is actually spent on (spec *bytes* at the read boundary), the half Lever 1 missed.
 
 **Limitations of the lever.** It assumes one package per directory (true for the example tasks)
 and runs one extra `go test -json -count=3` per pass to compute the passing set (acceptable here;
