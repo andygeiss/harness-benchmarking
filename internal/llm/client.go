@@ -236,6 +236,9 @@ type toolCallDelta struct {
 // mergeToolCall folds a streamed fragment into dst, accumulating argument text
 // per Index (the server may split one call's arguments across many frames).
 func mergeToolCall(dst *[]ToolCall, d toolCallDelta) {
+	if d.Index < 0 { // a malformed frame must not panic the whole run
+		return
+	}
 	for len(*dst) <= d.Index {
 		*dst = append(*dst, ToolCall{Type: "function"})
 	}

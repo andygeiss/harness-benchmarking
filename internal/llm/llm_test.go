@@ -43,6 +43,13 @@ func TestMergeToolCall(t *testing.T) {
 	if got := tcs[0].Function.Arguments; got != `{"path":"a.go"}` {
 		t.Errorf("args = %q", got)
 	}
+
+	// A negative index off a malformed server frame must be ignored, not panic
+	// the run (it would index (*dst)[-1] past the skipped grow loop).
+	mergeToolCall(&tcs, frag(-1, `junk`))
+	if len(tcs) != 1 {
+		t.Errorf("negative-index frame mutated the call set: len = %d", len(tcs))
+	}
 }
 
 func frag(i int, args string) toolCallDelta {

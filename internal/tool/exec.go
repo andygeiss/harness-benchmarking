@@ -57,20 +57,25 @@ func runCmdFull(ctx context.Context, dir string, timeout time.Duration, name str
 // flags like -exec/-toolexec/-o into an allowlisted `go` call out of band (the
 // allowlist only inspects the explicit args), GOENV repoints go at an
 // attacker-planted env file that can set them, and GOTOOLCHAIN can fetch and run a
-// different toolchain. The agent cannot set environment variables itself, so this
-// is defense-in-depth against a contaminated operator/CI environment: it keeps the
-// argument allowlist authoritative. The pinned empty GOFLAGS also overrides any
-// value persisted in the default `go env` file; GOTOOLCHAIN=local forbids switching.
+// different toolchain. CGO_ENABLED=0 closes the parallel cgo channel: with cgo on,
+// `go test` invokes the C compiler named by an inherited CC (with CGO_CFLAGS/
+// CGO_LDFLAGS), which would run an arbitrary program; the harness builds only
+// pure-Go example tasks, so disabling cgo neutralizes that whole surface at no cost.
+// The agent cannot set environment variables itself, so this is defense-in-depth
+// against a contaminated operator/CI environment: it keeps the argument allowlist
+// authoritative. The pinned empty GOFLAGS also overrides any value persisted in the
+// default `go env` file; GOTOOLCHAIN=local forbids switching.
 func sandboxedGoEnv() []string {
 	env := os.Environ()
-	out := make([]string, 0, len(env)+2)
+	out := make([]string, 0, len(env)+3)
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "GOFLAGS=") || strings.HasPrefix(kv, "GOENV=") || strings.HasPrefix(kv, "GOTOOLCHAIN=") {
+		if strings.HasPrefix(kv, "GOFLAGS=") || strings.HasPrefix(kv, "GOENV=") ||
+			strings.HasPrefix(kv, "GOTOOLCHAIN=") || strings.HasPrefix(kv, "CGO_ENABLED=") {
 			continue
 		}
 		out = append(out, kv)
 	}
-	return append(out, "GOFLAGS=", "GOTOOLCHAIN=local")
+	return append(out, "GOFLAGS=", "GOTOOLCHAIN=local", "CGO_ENABLED=0")
 }
 
 // clip shortens s to at most max bytes, keeping head and tail (where compiler

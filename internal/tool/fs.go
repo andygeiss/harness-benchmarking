@@ -146,12 +146,12 @@ func WriteFile(root string, protectTests bool) Tool {
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
-			if protectTests && isTestFile(a.Path) {
-				return "", errProtectedTest(a.Path)
-			}
 			abs, err := safeJoin(root, a.Path)
 			if err != nil {
 				return "", err
+			}
+			if protectTests && isTestFile(abs) {
+				return "", errProtectedTest(abs)
 			}
 			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 				return "", err
@@ -192,9 +192,6 @@ func EditFile(root string, protectTests bool) Tool {
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
-			if protectTests && isTestFile(a.Path) {
-				return "", errProtectedTest(a.Path)
-			}
 			if a.OldString == "" {
 				return "", fmt.Errorf("old_string must not be empty; use write_file to create a file")
 			}
@@ -204,6 +201,9 @@ func EditFile(root string, protectTests bool) Tool {
 			abs, err := safeJoin(root, a.Path)
 			if err != nil {
 				return "", err
+			}
+			if protectTests && isTestFile(abs) {
+				return "", errProtectedTest(abs)
 			}
 			info, err := os.Stat(abs)
 			if err != nil {
@@ -281,9 +281,16 @@ func ListDir(root string) Tool {
 	}
 }
 
-// isTestFile reports whether p names a Go test file (its base ends with _test.go).
+// isTestFile reports whether p names a Go test file. It folds case before the
+// suffix compare because the target filesystem (APFS) is case-insensitive: "x_Test.go"
+// names the same on-disk file as the protected x_test.go, so a byte-exact suffix
+// would let a case variant slip through and clobber the spec. The security-critical
+// callers (write_file/edit_file protection) must also pass the safeJoin-resolved
+// path: "x_test.go/." has base "." and evades the check, yet Clean collapses it back
+// to x_test.go. (shouldElide passes a raw path, which is benign — a missed match only
+// forgoes an optimization, it cannot expose a write.)
 func isTestFile(p string) bool {
-	return strings.HasSuffix(filepath.Base(p), "_test.go")
+	return strings.HasSuffix(strings.ToLower(filepath.Base(p)), "_test.go")
 }
 
 // errProtectedTest is returned when a write to a Go test file is refused; the
@@ -296,8 +303,10 @@ func errProtectedTest(path string) error {
 // with "/" before Clean collapses any leading "../" so traversal cannot climb
 // above root; the Rel check is a second line of defence. Confinement is purely
 // lexical and does not resolve symlinks: a symlink under root pointing outside
-// would still be followed. That is unreachable here — the fs tools cannot create
-// symlinks — but safeJoin alone is not symlink-safe.
+// would still be followed. The fs tools cannot create symlinks, but adversary-
+// authored code executed by `go test` could plant one that a later write then
+// follows — the same accepted limitation as the forge boundary (executing the
+// model's code in the deciding process), tolerable for the non-adversarial target.
 func safeJoin(root, p string) (string, error) {
 	abs := filepath.Join(root, filepath.Clean("/"+p))
 	rel, err := filepath.Rel(root, abs)

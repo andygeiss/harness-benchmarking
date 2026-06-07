@@ -20,7 +20,7 @@ does.
 
 ### Mechanism: re-orientation starvation
 The inner loop ends a pass when `resp.Usage.TotalTokens >= CtxLimit`, checked after
-each step (`internal/agent/loop.go:153`). Each pass starts from an empty conversation
+each step (`internal/agent/loop.go:186`). Each pass starts from an empty conversation
 (`msgs = {system, prompt}`); the model rebuilds its working context by **reading files**,
 and every read is appended to that conversation and re-sent on the next call. So
 **reading spends the same budget that ends the pass.** One budget is split between two

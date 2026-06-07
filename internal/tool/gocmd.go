@@ -105,6 +105,13 @@ func checkGoArgs(args []string) error {
 		if len(args) < 2 || !goModVerbs[args[1]] {
 			return fmt.Errorf("go mod subcommand not allowed; allowed: tidy, download, verify")
 		}
+		// tidy/download/verify need no flags; reject any so -modfile=<path> (and the
+		// like) cannot redirect the write to a go.mod outside the workspace.
+		for _, arg := range args[2:] {
+			if strings.HasPrefix(arg, "-") {
+				return fmt.Errorf("flag %q not allowed for go mod %s; no flags are permitted", arg, args[1])
+			}
+		}
 		return nil
 	}
 	for _, arg := range args[1:] {

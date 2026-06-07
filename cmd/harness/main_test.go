@@ -183,10 +183,18 @@ func TestSystemPromptMemoryToggle(t *testing.T) {
 }
 
 // TestWipeScratch removes the scratch files and leaves everything else; a second
-// call is a no-op rather than an error.
+// call is a no-op rather than an error. A nested PROGRESS.md must go too: it is
+// already invisible to the fingerprint's base-name exclusion, so if it survived the
+// wipe it would leak cross-pass memory into the -memory=false ablation.
 func TestWipeScratch(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "PROGRESS.md"), []byte("notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "PROGRESS.md"), []byte("nested notes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "keep.go"), []byte("package p\n"), 0o644); err != nil {
@@ -195,8 +203,10 @@ func TestWipeScratch(t *testing.T) {
 	if err := wipeScratch(dir); err != nil {
 		t.Fatalf("wipeScratch: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "PROGRESS.md")); !os.IsNotExist(err) {
-		t.Error("PROGRESS.md should have been removed")
+	for _, gone := range []string{"PROGRESS.md", "sub/PROGRESS.md"} {
+		if _, err := os.Stat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s should have been removed (err=%v)", gone, err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, "keep.go")); err != nil {
 		t.Errorf("keep.go should remain: %v", err)

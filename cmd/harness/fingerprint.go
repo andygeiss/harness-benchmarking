@@ -42,19 +42,28 @@ func (s *staleTracker) update(fp string) (stalled bool) {
 	return s.limit > 0 && s.count >= s.limit
 }
 
-// wipeScratch removes the agent scratch files (scratchFiles) from root, ignoring
-// any that are absent. The Ralph loop calls it before each pass when cross-pass
-// memory is ablated (-memory=false): deleting PROGRESS.md guarantees the model
-// cannot carry plan notes across the context reset, so the run measures
-// resumption from the persisted code alone. Because scratchFiles are excluded
-// from the fingerprint, wiping them never disturbs the stagnation guard.
+// wipeScratch removes the agent scratch files (scratchFiles) anywhere under root,
+// ignoring any that are absent. The Ralph loop calls it before each pass when
+// cross-pass memory is ablated (-memory=false): deleting PROGRESS.md guarantees the
+// model cannot carry plan notes across the context reset, so the run measures
+// resumption from the persisted code alone. It matches by base name at any depth to
+// stay consistent with the fingerprint's base-name exclusion below: a nested
+// PROGRESS.md is already invisible to the digest, so it must be wiped too — otherwise
+// it would survive the wipe and leak cross-pass memory into the very ablation this
+// exists to measure. Because scratchFiles are excluded from the fingerprint, wiping
+// them never disturbs the stagnation guard.
 func wipeScratch(root string) error {
-	for name := range scratchFiles {
-		if err := os.Remove(filepath.Join(root, name)); err != nil && !os.IsNotExist(err) {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
 			return err
 		}
-	}
-	return nil
+		if !d.IsDir() && scratchFiles[d.Name()] {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // fingerprint returns a SHA-256 digest over every regular file under root except

@@ -138,12 +138,13 @@ func TestGoArgAllowlist(t *testing.T) {
 		{"test", "-exec=touch x"},                      // ...also in -flag=value form
 		{"build", "-o", "../escape"},                   // write a binary outside the workspace
 		{"build", "-o=../escape"},
-		{"build", "-toolexec=touch x"},     // run a program per tool invocation
-		{"vet", "-vettool=/bin/false"},     // run an arbitrary vet tool
-		{"build", "-ldflags=-X=a.b=c"},     // linker-driven execution surface
-		{"test", "-overlay=o.json"},        // redirect file contents (re-opens -protect-tests)
-		{"mod", "edit", "-replace=a=../b"}, // rewrite go.mod to redirect the build
-		{"mod"},                            // missing verb
+		{"build", "-toolexec=touch x"},        // run a program per tool invocation
+		{"vet", "-vettool=/bin/false"},        // run an arbitrary vet tool
+		{"build", "-ldflags=-X=a.b=c"},        // linker-driven execution surface
+		{"test", "-overlay=o.json"},           // redirect file contents (re-opens -protect-tests)
+		{"mod", "edit", "-replace=a=../b"},    // rewrite go.mod to redirect the build
+		{"mod", "tidy", "-modfile=../escape"}, // redirect the write to a go.mod outside root
+		{"mod"},                               // missing verb
 	}
 	for _, args := range rejected {
 		if err := checkGoArgs(args); err == nil {
@@ -197,6 +198,31 @@ func TestProtectTests(t *testing.T) {
 		t.Error("edit_file allowed editing a *_test.go with protection on")
 	}
 
+	// The normalization-mismatch bypass: a path like "x_test.go/." has base "."
+	// (slips past isTestFile) but resolves back to x_test.go (the real spec). Both
+	// tools must refuse it on the resolved path, and the spec must be untouched.
+	if _, err := w.Run(context.Background(), writeArgs(t, "x_test.go/.", "package x // clobbered")); err == nil {
+		t.Error("write_file allowed the x_test.go/. bypass to overwrite a protected spec")
+	}
+	if _, err := EditFile(dir, true).Run(context.Background(), args(t, "x_test.go/.", "orig", "hacked")); err == nil {
+		t.Error("edit_file allowed the x_test.go/. bypass to edit a protected spec")
+	}
+
+	// The case-variant bypass: on a case-insensitive FS (the macOS/APFS target)
+	// "x_Test.go" names the same on-disk file as x_test.go, so the suffix check must
+	// fold case. Refused on every platform — a file literally named x_Test.go is not
+	// a Go test anyway, so over-refusing on a case-sensitive FS costs nothing.
+	if _, err := w.Run(context.Background(), writeArgs(t, "x_Test.go", "package x // clobbered")); err == nil {
+		t.Error("write_file allowed the x_Test.go case-variant bypass")
+	}
+	if _, err := EditFile(dir, true).Run(context.Background(), args(t, "x_Test.go", "orig", "hacked")); err == nil {
+		t.Error("edit_file allowed the x_Test.go case-variant bypass")
+	}
+
+	if b, err := os.ReadFile(filepath.Join(dir, "x_test.go")); err != nil || string(b) != "package x // orig" {
+		t.Errorf("protected spec was modified through a bypass: %q (%v)", b, err)
+	}
+
 	// With protection off, writing a test file is permitted (opt-out path).
 	if _, err := WriteFile(dir, false).Run(context.Background(), writeArgs(t, "y_test.go", "package y\n")); err != nil {
 		t.Errorf("protection off should allow test writes: %v", err)
@@ -210,6 +236,41 @@ func writeArgs(t *testing.T, path, content string) json.RawMessage {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// TestSandboxedGoEnv locks in the env-scrub that keeps checkGoArgs authoritative:
+// the Go control vars that inject flags out of band (GOFLAGS/GOENV/GOTOOLCHAIN) must
+// be dropped and pinned inert, while unrelated vars pass through untouched. This is
+// the only thing closing the contaminated-environment -exec channel, so the prose
+// guarantee needs a behavioral guard against a silent regression.
+func TestSandboxedGoEnv(t *testing.T) {
+	t.Setenv("GOFLAGS", "-exec=/bin/sh")
+	t.Setenv("GOENV", "/tmp/evil.env")
+	t.Setenv("GOTOOLCHAIN", "go1.0rc1")
+	t.Setenv("CGO_ENABLED", "1")
+	t.Setenv("HARNESS_KEEP", "1")
+
+	got := map[string][]string{}
+	for _, kv := range sandboxedGoEnv() {
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = append(got[k], v)
+	}
+
+	if vs := got["GOFLAGS"]; len(vs) != 1 || vs[0] != "" {
+		t.Errorf("GOFLAGS = %q, want exactly one empty value (injected -exec must be dropped and pinned)", vs)
+	}
+	if vs := got["GOTOOLCHAIN"]; len(vs) != 1 || vs[0] != "local" {
+		t.Errorf("GOTOOLCHAIN = %q, want exactly [local] (toolchain switch must be forbidden)", vs)
+	}
+	if vs := got["CGO_ENABLED"]; len(vs) != 1 || vs[0] != "0" {
+		t.Errorf("CGO_ENABLED = %q, want exactly [0] (cgo C-compiler channel must be off)", vs)
+	}
+	if vs, ok := got["GOENV"]; ok {
+		t.Errorf("GOENV survived the scrub: %q", vs)
+	}
+	if got["HARNESS_KEEP"] == nil {
+		t.Error("scrub dropped an unrelated environment variable")
+	}
 }
 
 // Real `go test -json` streams captured from go 1.26, one per case. The attack
