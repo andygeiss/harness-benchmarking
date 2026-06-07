@@ -142,3 +142,44 @@ model, or `go.mod`.
   dominate? (Testable.)
 - `go doc` on a partially-compiling workspace — confirm graceful per-package degradation.
 - Does injected ground truth ever mislead if the model distrusts it? (Recomputed each pass.)
+
+---
+
+## Part 3 — Measured: Lever 1 (2026-06-07)
+
+Lever 1 was built and A/B-tested at `-ctx-limit 11000`, n=3 each (`-digest` vs baseline,
+interleaved, identical otherwise), then **reverted** — recorded here, not kept as dead
+weight (cf. the resume-nudges). **Result: 0/3 vs 0/3 — both stagnate. Lever 1 does not
+clear the floor.**
+
+It did exactly what it was built to do, and that turned out to be the wrong half of `load`:
+
+- **`list_dir` eliminated** — 6.0/pass → **0** (the file tree is handed over), cutting
+  load/pass ~37% (15.5 → 9.8).
+- **`read_file` unchanged** — ~9.3/pass → ~9.6. The freed budget bought no completion.
+
+The read breakdown says why. Across **both** arms the model re-reads **all five test specs
+plus `go.mod` ≈ once per pass, every pass** (each spec ~19× over 19 baseline passes; ~29×
+over 29 digest passes), plus the implementations. At 11k the five specs alone are most of
+the budget — spent *before any code is written* — and the digest's per-package "this one
+passes" status **did not stop the model re-reading already-done packages.** It re-sweeps
+the full spec set to re-orient regardless of what it is told.
+
+So the binding cost is **full-spec-set re-reading, and it is unresponsive to injected
+ground truth.** That redirects the design:
+
+- **Lever 1 (cheap status + tree): insufficient** — status is not what the budget is spent on.
+- **Lever 2 (`go doc` sibling interfaces): lower value than hoped** — it cuts *impl-body*
+  reads (47/90 here), secondary to *spec* reads (95/145); and `api`, the one increment whose
+  sibling bodies are the waste, is reached in only 1/6 runs.
+- The cost that *would* matter — reading only the next increment's spec instead of all five —
+  is **behavioural**, and the A/B shows this model ignores the harness's "what's done" signal.
+  A prompt saying "read only the next failing package's spec" fights the same habit and would
+  likely null the same way.
+
+**Honest conclusion.** For this local model the 11k floor is set by its re-sweep-all-specs
+habit × spec size, not by orientation waste a digest can remove. The reliable levers remain
+the known ones: a per-pass budget above (full-spec-set + act) — the working 26k+ regime — or
+a model that reads selectively. This is the doc's own caveat, now demonstrated: the
+cheap-loading levers "rely on a weak model *using* the injected context well," and it does
+not. Raw rows in `runs.jsonl` (`digest` field) and `logs/apikit-11k-*.log`; n=3, ordinal.
