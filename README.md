@@ -259,8 +259,12 @@ already-satisfied specs — fed by the verifier the loop already runs, so it add
 than raising the budget to complete the task — **4/7 runs vs 0 across every recorded baseline**
 (Fisher p≈0.015, though fragile at this n) — and it **replicates on a second task, `graphkit`@11k,
 6/6 vs 0/6** (p≈0.001, clean separation). It raises completion *probability* rather than guaranteeing
-it (3/7 `apikit` runs still stagnate; `graphkit` did not, at n=6). The proposed `go doc`-interface
-and soft-limit-checkpoint levers remain unbuilt.
+it (3/7 `apikit` runs still stagnate; `graphkit` did not, at n=6). A third, deliberately *flat* task
+(`datakit` — five independent packages, no composer) **bounds** the lever: the byte-reduction still
+generalises (−21% reads), but the model one-shots the flat task even at a tight budget, so there is
+no floor to clear and elision rides along harmlessly — its *completion* benefit needs the hard floor
+that a costly composing increment creates, which independent-package kits lack. The proposed
+`go doc`-interface and soft-limit-checkpoint levers remain unbuilt.
 
 ## Code quality is a separate axis
 

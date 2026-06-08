@@ -351,3 +351,49 @@ weigh against. The `-memory` flag is kept because memory *changes outcomes both 
 ablation toggle; elision does not. The baseline arms are already on record (Parts 1, 4–6), and
 re-adding a toggle is a small change if a future task ever needs to ablate it. What remains genuinely
 unbuilt is unchanged: the `go doc`-interface lever (Lever 2) and the soft-limit checkpoint (Lever 3).
+
+---
+
+## Part 8 — Measured: a flat third task bounds the lever (2026-06-08)
+
+Parts 5–6 showed elision clearing the floor on `apikit` and `graphkit` — both **composer-floored**:
+their costliest increment needs every sibling at once (`apikit`'s `api`; `graphkit`'s packages all
+import `graph`). The open question was whether the win generalises or is specific to that shape. So a
+**third, deliberately different** substrate was built: `datakit` — five **independent** container
+packages (`stack`, `queue`, `set`, `heap`, `ring`), **no package imports another**, ~12.4 KB of
+specs (between `graphkit`'s 13.2 KB and `apikit`'s 15.1 KB). Validated satisfiable + deterministic
+(93 test-passes under `-count=3`) before use. The A/B ran at commit `db635c4` (the flag-based path,
+for comparability with Parts 5–6; the built-in path is equivalent).
+
+**The flat task has no hard floor.** `datakit` one-shots at `-ctx-limit 11000` (1 pass, 5/5). Single
+runs at 8k/6k/5k stagnated, which *looked* like a floor — but the A/B revealed those were the tail of
+a noisy, mostly-completing distribution. Interleaved n=6 elide vs n=6 baseline at two budgets:
+
+| budget | elide | baseline | read_bytes/pass (elide / baseline) |
+|---|---|---|--:|
+| 8k | **6/6** | **3/6** | 10.5k / 13.4k (**−21%**) |
+| 6k | **5/6** | **5/6** | 11.2k / 12.6k |
+
+**The clincher: baseline completes *more* at 6k (5/6) than at 8k (3/6)** — non-monotonic in budget,
+which is impossible if budget were the binding constraint. The model one-shots `datakit` (passes
+1–3, reading all specs once) even at 6k, because each increment is trivially small (a `stack` is ~30
+lines). There is no budget where baseline reliably stagnates, so **there is nothing for elision to
+clear**.
+
+- **Mechanism generalises; completion benefit does not — because there is no floor here.** Elision
+  fired (up to 10 stubs/run) and cut `read_bytes`/pass **21%** at 8k, matching `apikit` exactly. But
+  with completion never blocked, that saving buys no completion lift (8k 6/6-vs-3/6 is p≈0.09 over a
+  *drifting* baseline — outcomes ran `S S S C C C` across the batch; 6k is a flat 5/6-vs-5/6). The
+  lever is **inert here, never harmful** (gate-safe as always).
+- **This bounds the lever, and that is the value of the third task.** Elision's *completion* benefit
+  is **conditional on a hard floor**, and a hard floor requires a **costly composing increment** —
+  precisely what `apikit`/`graphkit` have and `datakit`, by construction, does not. Neither composer
+  task alone could establish this; the flat task's null is the contrast that fixes the lever's scope.
+
+**Honest conclusion.** Across three purpose-built substrates the picture is now: the read-boundary
+**byte-reduction generalises** (−21% on each task that re-sweeps specs), but it converts to a
+**completion** win only where stagnation is real — i.e. where one increment's working set is large
+relative to the window. So Parts 5–6's "clears the floor" is **scoped, not overturned**: it clears a
+*composer* floor; on a flat kit of small independent packages there is no floor to clear, and
+elision rides along harmlessly. Rows in `runs.jsonl` (`task` = `examples/datakit/PROMPT.md`,
+2026-06-07T23:29 (8k) and 2026-06-08T12:53 (6k)); stderr in `logs/datakit-{,6k-}{elide,baseline}-*.log`.
