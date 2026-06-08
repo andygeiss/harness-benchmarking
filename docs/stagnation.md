@@ -397,3 +397,55 @@ relative to the window. So Parts 5–6's "clears the floor" is **scoped, not ove
 *composer* floor; on a flat kit of small independent packages there is no floor to clear, and
 elision rides along harmlessly. Rows in `runs.jsonl` (`task` = `examples/datakit/PROMPT.md`,
 2026-06-07T23:29 (8k) and 2026-06-08T12:53 (6k)); stderr in `logs/datakit-{,6k-}{elide,baseline}-*.log`.
+
+---
+
+## Part 9 — Measured: Lever 2 (go-doc sibling interfaces) does not clear the floor (2026-06-09)
+
+Lever 2 (Part 2): write a composing increment against sibling *signatures*, not *bodies*. Built as the
+evidence-informed mechanical version (Part 3 showed prompt-injection is ignored): behind `-impl-doc`
+(default off), a read of a **green** package's non-test `.go` file returned its `go doc -all`
+signatures instead of the body, stacking on built-in spec elision. Gate-safe: `go doc` type-checks
+but never executes; disk untouched; the body was returned whenever `go doc` failed or was not smaller.
+
+Pre-build evidence was split: the Part 5 stagnators re-read green sibling *bodies* heavily (13–27× vs
+completers' 7×), suggesting a body-read floor Lever 2 targets — but an adversarial lens warned the
+stalls might be behavioural, not I/O. Three stages settled it.
+
+**(0) A contamination, caught and corrected.** A design-workflow agent, experimenting with `go doc`,
+wrote a `health.go` impl into the `apikit` *seed* (`examples/apikit/workspace/health/`). Because
+`cmd/example` reseeds the sandbox *from* that seed, the first A/B started every apikit run with
+`health` pre-implemented — inflating elision-only to 8/8 and removing the floor. Caught via
+`git status` before any conclusion was committed; the seed was cleaned and the A/B re-run. (Not a
+harness bug — the reseed is correct; an agent polluted the repo. Lesson: keep agent experiments out of
+the example seeds.)
+
+**(1) Clean A/B @ 11k — no floor to clear.** elision+L2 **8/8** vs elision-only **7/8** (Fisher
+p≈0.5, n.s.); L2 cut read_bytes/pass **32%** (18.6k → 12.6k). But elision-only at 11k is now 7/8
+(88%), vs Part 5's 4/7 (57%) — the residual floor did not reproduce, so the test was underpowered by
+the absence of the thing being tested. apikit@11k elision completion is session-variable.
+
+**(2) Floor located.** elision-only stagnates reliably below 11k: **0/2 at each of 9k, 8k, 7k**. So 9k
+is a budget where the floor is present and reliable.
+
+**(3) Definitive A/B @ the 9k floor — Lever 2 does not clear it.**
+
+| arm | completed | read_bytes/pass | doc_subs |
+|---|---|--:|--:|
+| A (elision only)   | **1 / 8** | 18.2k | 0 |
+| B (elision + L2)   | **1 / 8** | 16.9k (−7%) | 4–25 |
+
+At the floor where elision-only stagnates 7/8, **Lever 2 stagnates identically** (1/8 = 1/8; Fisher
+p≈1.0). It fired (doc_subs 4–25) and trimmed reads ~7%, but did not convert to completion. The
+sibling-body re-reads it removes are **not the binding constraint at the floor**: a stagnating run's
+wall is the `api` increment itself (and the model's pass-to-pass behaviour), which a read-boundary
+byte-cut does not move. Above the floor (11k) elision already completes, so L2 is unnecessary; at the
+floor (9k) it is insufficient — **no budget regime where it demonstrably helps.**
+
+**Verdict: null; reverted** — like the Lever 1 digest (Part 3), recorded not kept. The `-impl-doc`
+flag, the `go doc` read path, and its code are removed; only this record and the logs remain. This
+completes the cheap-loading lever investigation: of the three proposed levers, only **read-boundary
+spec elision converts to completion** (and only against a hard composer floor — Parts 5–6, bounded by
+Part 8). The digest (Lever 1) and go-doc-impls (Lever 2) both measure null. **Lever 3** (soft-limit
+checkpoint) is now the one proposed lever left unbuilt. Rows in `runs.jsonl` (`impl_doc` / `doc_subs`,
+apikit ctx 9000/11000, 2026-06-08–09); stderr in `logs/apikit-L2{,c,f}-*.log`, `logs/apikit-floor2-*.log`.
