@@ -82,6 +82,7 @@ func main() {
 	stream := flag.Bool("stream", false, "stream tokens live to stderr as the model generates")
 	debug := flag.Bool("debug", false, "log model reasoning and verbose detail")
 	memory := flag.Bool("memory", true, "carry PROGRESS.md across passes as the agent's plan memory; -memory=false ablates it (drops the PROGRESS.md guidance from the built-in prompt and wipes PROGRESS.md before each pass) to measure resumption from the persisted code alone")
+	elidePassing := flag.Bool("elide-passing", true, "stub a *_test.go spec on read once its package's tests pass, so a fresh pass does not re-spend context re-reading verified specs (go-test verify only); on by default — -elide-passing=false ablates it for the stagnation A/B (see docs/stagnation.md)")
 
 	maxTokens := flag.Int("max-tokens", 32768, "max output tokens per call")
 	temp := flag.Float64("temp", 0.6, "temperature")
@@ -128,8 +129,14 @@ func main() {
 	// re-orientation floor; see docs/stagnation.md). The set is fed by the verifier
 	// below — which runs anyway for the done gate and the end-of-pass probe — so no
 	// extra test run is needed; a non-go-test verify command never feeds it, leaving
-	// reads unchanged.
-	elide := tool.NewElideState()
+	// reads unchanged. Elision is on by default; -elide-passing=false leaves the state
+	// nil — the OFF arm that restores the pre-elision baseline so the floor it clears
+	// can be measured on a second model (Part 7 anticipated this toggle). ReadFile,
+	// Update, and Elided are all nil-safe, so the onPass wiring below is unchanged.
+	var elide *tool.ElideState
+	if *elidePassing {
+		elide = tool.NewElideState()
+	}
 
 	reg := tool.NewRegistry()
 	reg.Register(tool.ReadFile(absWork, elide))
@@ -164,6 +171,7 @@ func main() {
 		Model:             *model,
 		Task:              *promptPath,
 		Memory:            *memory,
+		ElidePassing:      *elidePassing,
 		CtxLimit:          *ctxLimit,
 		MaxIters:          *maxIters,
 		MaxSteps:          *maxSteps,
@@ -175,7 +183,7 @@ func main() {
 		RepetitionPenalty: *repPenalty,
 		PresencePenalty:   *presencePenalty,
 	}
-	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters, "memory", *memory)
+	log.Info("starting", "model", *model, "workdir", absWork, "verify", *verifyCmd, "max_iters", *maxIters, "memory", *memory, "elide_passing", *elidePassing)
 	os.Exit(run(ctx, log, sess, absWork, *logDir, system, prompt, *maxStale, *memory, verifier, elide, rec))
 }
 

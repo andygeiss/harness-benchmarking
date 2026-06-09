@@ -352,6 +352,15 @@ ablation toggle; elision does not. The baseline arms are already on record (Part
 re-adding a toggle is a small change if a future task ever needs to ablate it. What remains genuinely
 unbuilt is unchanged: the `go doc`-interface lever (Lever 2) and the soft-limit checkpoint (Lever 3).
 
+**Update (2026-06-09) — the toggle is back, default-on.** That "future task" arrived: a second model
+(`gemma-4-26B-A4B-it`, sampled at temp 1.0) to test whether the re-orientation floor and elision's
+effect generalise beyond Qwen, whose re-sweep-all-specs habit the whole finding rests on (Parts 3, 9).
+Locating a floor needs the elision-OFF baseline, which the built-in path cannot produce, so
+`-elide-passing` was restored — but **default-on** this time (the lever is validated, not the original
+experimental-off knob), leaving the `ElideState` nil only when explicitly ablated. Part 7's folded
+onPass probe is untouched; OFF is simply the nil state ReadFile/Update/Elided already tolerate. Gemma
+results follow.
+
 ---
 
 ## Part 8 — Measured: a flat third task bounds the lever (2026-06-08)
@@ -449,3 +458,84 @@ spec elision converts to completion** (and only against a hard composer floor �
 Part 8). The digest (Lever 1) and go-doc-impls (Lever 2) both measure null. **Lever 3** (soft-limit
 checkpoint) is now the one proposed lever left unbuilt. Rows in `runs.jsonl` (`impl_doc` / `doc_subs`,
 apikit ctx 9000/11000, 2026-06-08–09); stderr in `logs/apikit-L2{,c,f}-*.log`, `logs/apikit-floor2-*.log`.
+
+---
+
+## Part 10 — Measured: a second model floors lower, and spec elision does not clear its floor (2026-06-09)
+
+Everything above is one model (`Qwen3.6-35B-A3B`), and the doc says so repeatedly: "for this local
+model the 11k floor is set by its re-sweep-all-specs habit." That habit is *behavioural*, so the whole
+elision result has an unstated external-validity question — does it generalise across models, or only
+across tasks? A second model answers it: `gemma-4-26B-A4B-it-oQ4-fp16` (a 26B MoE, ~4B active),
+sampled hot at **temp 1.0 / top_p 0.95 / top_k 64** (vs Qwen's 0.6). To run the baseline arm the
+`-elide-passing` toggle was restored default-on (Part 7 addendum). Same substrates, same `go test`
+gate, same interleaved-A/B protocol.
+
+**Gemma drives the harness cleanly** (smoke: `reverse` one-shot, 6 well-formed tool calls, no malformed
+syntax) and is **terse** — ~46–150 completion tokens/call, **no thinking trace** at all (Gemma emits
+none; `SplitReasoning` degrades to a no-op). That terseness is the headline mechanism: where Qwen
+spends its budget on a reasoning trace *and* re-sweeping every spec, Gemma spends it on **acting**.
+
+### Floor maps (baseline, elision OFF) — Gemma floors, but lower than Qwen
+
+| task | 6k | 9k | 11k |
+|---|---|---|---|
+| **graphkit** | 0/3 (reaches 1–2/6) | 0/3 (reaches 1–3/6) | **completed 6/6** (n=1) |
+| **apikit**   | — | 0/2 (reaches 3–4/5) | 0/2 (reaches 2–4/5) |
+
+graphkit's floor sits **below 11k** for Gemma — it *completes* at 11k where Qwen scores a clean 0/6
+(Part 6). So **the mechanism generalises (Gemma floors too) but the flip-point shifts down**, exactly
+Part 1's "the mechanism generalises, the flip point does not" — now shown across *models*, not just
+tasks. The cause is logged: at its floor Gemma's **load:act ratio is ~1.6–2.4 : 1**, against Qwen's
+**~12 : 1** (Part 4). Gemma is not drowning in re-orientation; when the budget merely *allows* one
+increment it banks a package per pass and converges (graphkit @ 11k, 7 passes, all cut by `context`,
+finished by the end-of-pass probe — it never called `done`).
+
+### A/B results — elision does **not** clear Gemma's floors
+
+| task @ budget | B: elision ON | A: baseline | read_bytes/pass | Fisher |
+|---|---|---|--:|--:|
+| **graphkit @ 9k** (n=4) | **0/4** | **0/4** | 6.7k / 8.1k (−16%) | p=1.0 |
+| **apikit @ 11k** (n=4)  | **1/4** | **0/4** | 11.2k / 16.7k (−33%) | p≈0.5 (n.s.) |
+
+Both null on completion — against Qwen's **6/6 vs 0/6** (graphkit) and **4/7 vs 0/10** (apikit). Elision
+*fired* every B run (`elided_reads` 4–80, 0 on every A) and **cut reads 16–33%**, but the bytes did not
+convert — the recurring Parts 6/8/9 result (byte-reduction ≠ completion), now across a model boundary.
+
+The **why** is sharpest on apikit, and it is not the cap (n=4, `-max-iters 20`). On apikit **almost every
+run, both arms, wrote all 5 packages including `api`, yet only one passed** — the end-of-pass probe
+verifies each changed pass, so a `5/5-written` non-completion means **`api` was written but fails its
+tests**. Direct check of a stagnated sandbox: `health`/`users`/`tasks`/`notes` pass, **`api` fails**
+(`307` routing redirects, non-JSON 404). So Gemma's apikit wall is **`api`-correctness**, where Qwen's
+was **never reaching `api`** (loading-starved at 3/5, Part 4). Gemma is budget-efficient enough to reach
+and write the composer increment; it then gets the *code* wrong. Elision frees loading budget — which
+is not the binding constraint for either Gemma floor (graphkit: too tight to bank an increment; apikit:
+writing `api` correctly).
+
+### Honest conclusion
+
+The elision lever's **byte-reduction generalises universally** (−21/−5/−21% Qwen across three tasks,
+−16/−33% Gemma across two). Its **completion conversion does not** — and the boundary is now two
+conditions, one per axis:
+
+- **(task)** a hard *composer* floor — Part 8: inert on flat `datakit`, no floor to clear;
+- **(model)** that floor is *re-read-bound* — Part 10: inert on Gemma, whose floors are budget-bound
+  (graphkit) or correctness-bound (apikit), neither being the spec re-sweeping elision removes.
+
+Qwen's floors satisfy both because its re-sweep-all-specs habit *is* the floor; Gemma, reading
+selectively and emitting no reasoning trace, has no re-read floor for a read-boundary lever to clear.
+**Spec elision is therefore not a general fix for Ralph-loop stagnation; it is the fix for a
+re-read-bound floor**, which is a property of the *model's behaviour* as much as the task. The lever
+stays in (default-on, gate-safe, either helps or is inert — Part 7), now with a measured second model
+on the inert side.
+
+### Honest limits
+
+n=4/arm, single session/server, **temp 1.0** (high variance — graphkit baseline passes ranged 4→34).
+`-max-iters 20` caps the apikit A/B: 2/4 B and 1/4 A runs hit the cap at `5/5-written`, so the apikit
+*completion count* is cap-confounded — but the *correctness-wall* finding (the real apikit result) is
+cap-independent and gate-confirmed, and even an uncapped re-run would measure "how often Gemma lucks
+into a correct `api` at temp 1.0," not a loading lever. graphkit @ 9k is the clean test (no B run hit
+the cap; 0/4 is real). The honest hard limit (an irreducible increment exceeding the window) is
+untouched. Rows in `runs.jsonl` (`model` = `gemma-4-26B-A4B-it-oQ4-fp16`, `elide_passing` true/false,
+2026-06-09); stderr in `logs/gemma-{graphkit,apikit}-*.log`.

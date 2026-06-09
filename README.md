@@ -266,6 +266,16 @@ no floor to clear and elision rides along harmlessly — its *completion* benefi
 that a costly composing increment creates, which independent-package kits lack. The proposed
 `go doc`-interface and soft-limit-checkpoint levers remain unbuilt.
 
+A **second model** bounds the lever on the other axis. `gemma-4-26B-A4B-it` (sampled hot, no thinking
+trace) floors *lower* than Qwen — it completes `graphkit`@11k where Qwen scores 0/6, because its
+**~3:1 load:act ratio** (vs Qwen's ~12:1) shifts the flip-point down — yet elision is **inert** on the
+floors it does have: `graphkit`@9k 0/4 vs 0/4 and `apikit`@11k 1/4 vs 0/4 (n.s.), because those floors
+are *budget-bound* (too tight to bank an increment) or *correctness-bound* (Gemma writes `api` but gets
+the routing wrong), not the spec re-reading elision removes. So the lever's completion benefit needs
+**both** a composer floor (task) **and** a re-read-bound model (Qwen's re-sweep habit) — read-byte
+reduction generalises across models, completion does not. See [docs/stagnation.md](docs/stagnation.md)
+Part 10.
+
 ## Code quality is a separate axis
 
 Passing the gate means the code is *correct*, not that it is *good*; the harness

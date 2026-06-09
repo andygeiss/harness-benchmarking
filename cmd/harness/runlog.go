@@ -14,9 +14,10 @@ import (
 type RunLog struct {
 	Time              string   `json:"time"`
 	Model             string   `json:"model"`
-	Task              string   `json:"task"`    // path to the task prompt (-prompt) — identifies which task ran, so a judgment can be joined to its run
-	Memory            bool     `json:"memory"`  // was PROGRESS.md cross-pass memory enabled (-memory)
-	Outcome           string   `json:"outcome"` // completed | stagnated | budget | interrupted | fault
+	Task              string   `json:"task"`          // path to the task prompt (-prompt) — identifies which task ran, so a judgment can be joined to its run
+	Memory            bool     `json:"memory"`        // was PROGRESS.md cross-pass memory enabled (-memory)
+	ElidePassing      bool     `json:"elide_passing"` // was spec elision enabled (-elide-passing); on by default, false is the ablation arm
+	Outcome           string   `json:"outcome"`       // completed | stagnated | budget | interrupted | fault
 	Passes            int      `json:"passes"`
 	PassReasons       []string `json:"pass_reasons"`
 	DurationSec       float64  `json:"duration_sec"`
