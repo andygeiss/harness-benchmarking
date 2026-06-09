@@ -74,6 +74,16 @@ harness against it. Any extra flags are forwarded to the harness:
   package ships its own spec (`*_test.go` driving the handlers through `httptest`)
   with uniform conventions (REST verbs, JSON shapes, status codes) stated in
   `PROMPT.md`.
+- **datakit** — five **independent** container packages (`stack`, `queue`, `set`,
+  `heap`, `ring`; module `datakit`, ~12.4 KB of specs), and **no package imports
+  another** — deliberately *flat*, the control substrate for the stagnation
+  study. Where `apikit`/`graphkit` end in a costly *composing* increment (the
+  shape that creates a hard per-pass-budget floor), `datakit` by construction has
+  none, and that contrast is its job: it bounds the spec-elision lever — the
+  byte-reduction generalises here, the completion benefit does not, because there
+  is no floor to clear ([docs/stagnation.md](../docs/stagnation.md) Part 8).
+  Validated satisfiable and deterministic (93 test-passes under `-count=3`)
+  before use.
 
 ## Cross-pass memory (and why these examples one-shot here)
 

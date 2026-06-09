@@ -134,6 +134,8 @@ Useful flags (full list via `go run ./cmd/harness -h`):
 - `-debug` — log the model's reasoning trace
 - `-verify` — verification command for the done-gate (default `go test ./...`)
 - `-memory=false` — ablate the cross-pass `PROGRESS.md` memory
+- `-elide-passing=false` — ablate the read-boundary spec elision (default on; see
+  the stagnation finding below)
 - `-protect-tests` — refuse agent writes to `*_test.go` (default on)
 - `-ctx-limit` / `-max-iters` / `-max-steps` — the per-pass and per-run budgets
 
@@ -152,6 +154,7 @@ go run ./cmd/example calc        # arithmetic evaluator: lexer → parser → ev
 go run ./cmd/example todo        # htmx web app: net/http + html/template + embed
 go run ./cmd/example graphkit    # six-package graph algorithms library
 go run ./cmd/example apikit      # modular JSON HTTP API (5 packages) — built for multi-pass runs
+go run ./cmd/example datakit     # five independent container packages — flat control for the stagnation study
 go run ./cmd/example stuck       # adversarial: unsatisfiable test, exercises the stagnation guard
 ```
 
@@ -255,21 +258,31 @@ That is how bounded passes compose into an unbounded task. The full mechanism �
 lever that moves it — is in [docs/stagnation.md](docs/stagnation.md). The proposed pass-start
 digest was built, A/B-tested, and reverted (null); what works is a now-built-in read-boundary elision
 that stubs a spec once its package verifies, so a fresh pass cannot re-spend its budget re-reading
-already-satisfied specs — fed by the verifier the loop already runs, so it adds no test execution. At `apikit`@11k it is the first change other
-than raising the budget to complete the task — **4/7 runs vs 0 across every recorded baseline**
-(Fisher p≈0.015, though fragile at this n) — and it **replicates on a second task, `graphkit`@11k,
-6/6 vs 0/6** (p≈0.001, clean separation). It raises completion *probability* rather than guaranteeing
-it (3/7 `apikit` runs still stagnate; `graphkit` did not, at n=6). A third, deliberately *flat* task
-(`datakit` — five independent packages, no composer) **bounds** the lever: the byte-reduction still
-generalises (−21% reads), but the model one-shots the flat task even at a tight budget, so there is
-no floor to clear and elision rides along harmlessly — its *completion* benefit needs the hard floor
-that a costly composing increment creates, which independent-package kits lack. The proposed
-`go doc`-interface and soft-limit-checkpoint levers remain unbuilt.
+already-satisfied specs — fed by the verifier the loop already runs, so it adds no test execution. 
+At `apikit`@11k it is the first change other than raising the budget to complete the task — 
+**4/7 runs vs 0/24 across every recorded no-elision run** (Fisher p≈0.015 against the A/B's pooled 
+0/10 baseline; p≈0.035 against the interleaved 0/7 arm alone — fragile at this n) — and it 
+**replicates on a second task, `graphkit`@11k, 6/6 vs 0/6** (p≈0.001 — clean separation in that A/B, 
+though the cumulative no-elision ledger at that budget is 1/20, not zero: the floor is near-
+deterministic, not absolute). It raises completion *probability* rather than guaranteeing it 
+(3/7 `apikit` runs still stagnate, and the rate is session-variable — a later same-config batch ran 
+15/16; `graphkit` did not stagnate, at n=6). A third, deliberately *flat* task (`datakit` — five 
+independent packages, no composer) **bounds** the lever: the byte-reduction still generalises 
+(−21% reads), but `datakit` has no hard floor to clear — baseline completion is noisy and 
+*non-monotonic* in budget (3/6 at 8k, 5/6 at 6k) — so no significant completion effect was measured 
+(the 8k arm even trends *pro*-elision, 6/6 vs 3/6, p≈0.09, underpowered at n=6) and elision rides 
+along harmlessly. Its *completion* benefit needs the hard floor that a costly composing increment 
+creates, which independent-package kits lack. The proposed `go doc`-interface lever was likewise 
+built, measured null at the relocated 9k floor (1/8 vs 1/8, Part 9), and reverted; the soft-limit 
+checkpoint (Lever 3) was never built — see the closing ledger
+([docs/stagnation.md](docs/stagnation.md) Part 11) for the explicit waiver.
 
 A **second model** bounds the lever on the other axis. `gemma-4-26B-A4B-it` (sampled hot, no thinking
-trace) floors *lower* than Qwen — it completes `graphkit`@11k where Qwen scores 0/6, because its
-**~3:1 load:act ratio** (vs Qwen's ~12:1) shifts the flip-point down — yet elision is **inert** on the
-floors it does have: `graphkit`@9k 0/4 vs 0/4 and `apikit`@11k 1/4 vs 0/4 (n.s.), because those floors
+trace) floors *lower* than Qwen — it completes `graphkit`@11k where Qwen, without elision, completes
+1/20 — because its **~1.6–2.4:1 load:act ratio** (vs Qwen's ~12:1) shifts the flip-point down. Yet
+elision shows **no completion effect** on the floors Gemma does have — `graphkit`@9k 0/4 vs 0/4 and
+`apikit`@11k 1/4 vs 0/4 (small-n nulls: at n=4/arm only a near-deterministic effect is detectable) —
+because those floors
 are *budget-bound* (too tight to bank an increment) or *correctness-bound* (Gemma writes `api` but gets
 the routing wrong), not the spec re-reading elision removes. So the lever's completion benefit needs
 **both** a composer floor (task) **and** a re-read-bound model (Qwen's re-sweep habit) — read-byte

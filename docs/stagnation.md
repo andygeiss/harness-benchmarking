@@ -393,7 +393,10 @@ clear**.
   fired (up to 10 stubs/run) and cut `read_bytes`/pass **21%** at 8k, matching `apikit` exactly. But
   with completion never blocked, that saving buys no completion lift (8k 6/6-vs-3/6 is p≈0.09 over a
   *drifting* baseline — outcomes ran `S S S C C C` across the batch; 6k is a flat 5/6-vs-5/6). The
-  lever is **inert here, never harmful** (gate-safe as always).
+  lever shows **no significant completion effect here, and is never harmful** (gate-safe as always).
+  "Inert" is the *conservative* reading of an underpowered arm — the 8k trend actually runs
+  pro-elision, and at n=6 even a large true effect would often be missed — so what this null
+  establishes is the absence of a hard floor, not a measured zero.
 - **This bounds the lever, and that is the value of the third task.** Elision's *completion* benefit
   is **conditional on a hard floor**, and a hard floor requires a **costly composing increment** —
   precisely what `apikit`/`graphkit` have and `datakit`, by construction, does not. Neither composer
@@ -483,8 +486,11 @@ spends its budget on a reasoning trace *and* re-sweeping every spec, Gemma spend
 | **graphkit** | 0/3 (reaches 1–2/6) | 0/3 (reaches 1–3/6) | **completed 6/6** (n=1) |
 | **apikit**   | — | 0/2 (reaches 3–4/5) | 0/2 (reaches 2–4/5) |
 
-graphkit's floor sits **below 11k** for Gemma — it *completes* at 11k where Qwen scores a clean 0/6
-(Part 6). So **the mechanism generalises (Gemma floors too) but the flip-point shifts down**, exactly
+graphkit's floor sits **below 11k** for Gemma — it *completes* at 11k where Qwen, without elision,
+completed 1/20 across every recorded run (0/6 in Part 6's interleaved A/B; the lone straggler —
+2026-06-06T14:39 in `runs.jsonl` — landed during the since-removed prompt-nudge experiment the README
+records as "nudges 0–1/5", so the Qwen floor is near-deterministic, not absolute). So **the mechanism
+generalises (Gemma floors too) but the flip-point shifts down**, exactly
 Part 1's "the mechanism generalises, the flip point does not" — now shown across *models*, not just
 tasks. The cause is logged: at its floor Gemma's **load:act ratio is ~1.6–2.4 : 1**, against Qwen's
 **~12 : 1** (Part 4). Gemma is not drowning in re-orientation; when the budget merely *allows* one
@@ -539,3 +545,81 @@ into a correct `api` at temp 1.0," not a loading lever. graphkit @ 9k is the cle
 the cap; 0/4 is real). The honest hard limit (an irreducible increment exceeding the window) is
 untouched. Rows in `runs.jsonl` (`model` = `gemma-4-26B-A4B-it-oQ4-fp16`, `elide_passing` true/false,
 2026-06-09); stderr in `logs/gemma-{graphkit,apikit}-*.log`.
+
+---
+
+## Part 11 — Closing ledger: the line is closed (2026-06-09)
+
+Parts 1–10 opened with one observed failure mode and ended with a measured, twice-bounded lever. This
+part closes the investigation *deliberately* — every stagnation mode observed in `runs.jsonl`, mapped
+to a measured clearing lever or an explicit out-of-scope call — after running the one experiment that
+could still have changed the shipped default (quality under the cure, below).
+
+### The ledger
+
+| stagnation mode (where observed) | disposition |
+|---|---|
+| **Re-read-bound composer floor** — Qwen `apikit`@11k 0/24, `graphkit`@11k 1/20 without elision | **Cleared, shipped.** Built-in read-boundary spec elision (Parts 5–7): `apikit` 4/7 (p≈0.015 pooled / 0.035 interleaved), `graphkit` 6/6 vs 0/6 (p≈0.0011 — the one result here that survives a Holm correction over the doc's ~10 completion tests); the rate is session-variable upward (clean Part-9 controls 15/16; this part's runs 3/3). |
+| **Increment-fit floor under the cure** — Qwen `apikit`@9k: 2/18 *with* elision | **Out of scope: hard-limit territory.** The wall is the `api` increment itself (Part 9: L2 null 1/8 vs 1/8 at this floor); when one increment's working set ~fills the window, no read-boundary lever applies — Part 1's honest hard limit, relocated, not refuted. |
+| **Budget-bound floor** — Gemma `graphkit`@9k 0/4 vs 0/4 | **Out of scope: model × budget.** Too tight to bank one increment per pass; elision fired (−16% bytes) and converted nothing (Part 10). |
+| **Correctness-bound wall** — Gemma `apikit`@11k writes 5/5, `api` fails its tests | **Out of scope: model capability.** The gate refusing wrong code is the gate working; a loading lever cannot fix routing bugs (Part 10). |
+| **Stochastic flat-task stragglers** — `datakit` baseline 3/6@8k vs 5/6@6k | **Out of scope: noise, no floor.** Non-monotonic in budget, so budget is not binding; no significant elision effect, the pro-elision trend disclosed and underpowered (Part 8). |
+| **Unsatisfiable spec** — the `stuck` example | **By design.** The stagnation guard halting is the correct outcome, not a mode to clear. |
+
+### Lever 3, waived — not forgotten
+
+Lever 3 (soft-limit checkpoint, Part 2) is the one proposed lever never built; that is now a decision
+recorded with reasons, not an omission. (1) Its Part-2 build trigger — "passes still die
+mid-increment" — turns out to be near-tautological: at the `apikit` 9k floor, 152 of 153
+stagnating-run passes end by `context`, but so do the passes of *completing* runs (Gemma
+`graphkit`@11k completed with all 7 passes cut; this part's elide-judge-1 completed via the probe
+with its final pass cut). A context-cut pass loses little durable progress — the filesystem already
+holds the writes and the end-of-pass probe already verifies them — so the checkpoint's value-add over
+probe+filesystem is marginal on every floor actually observed. (2) The track record prices it: both
+behaviour-shaped levers nulled (Lever 1 digest 0/3 vs 0/3; the Part-1-era prompt nudges 0–1/5), and
+the mechanical Lever 2 nulled at the floor it targeted (1/8 vs 1/8). **Reopen trigger:** a measured
+floor whose passes repeatedly end with *unverified mid-increment work the probe then fails* —
+durable-progress loss, not loading cost — is the one signature that would justify building it.
+
+### The terminal experiment — quality under the cure (2026-06-09)
+
+`judgments.jsonl` had **zero elision-era rows** (it stopped 2026-06-06), so the one question that
+could still flip the shipped default — does the cure trade code *quality* for completion? — was open.
+Run: three elide-mode `apikit`@11k completions (3/3 completed: 2, 4, 8 passes — the high session-rate
+regime again) plus a 26k one-shot comparator (1 pass; elision never fires in a first pass), each
+judged head-to-head against one fresh Sonnet baseline by four independent Opus sessions per the
+`judge` skill (blind to tests; rows `apikit-2026-06-09T19:47:27Z`…`20:02:30Z` in `judgments.jsonl`;
+candidates preserved under `logs/candidates/`).
+
+| candidate | passes | subject | Sonnet baseline (same code, re-scored per session) | gap |
+|---|--:|--:|--:|--:|
+| elide-1 | 2 | 0.69 | 0.71 | −0.02 |
+| elide-2 | 4 | 0.65 | 0.70 | −0.06 |
+| elide-3 | 8 | 0.58 | 0.78 | −0.21 |
+| 26k one-shot | 1 | **0.79** | 0.71 | **+0.08** |
+
+Reading (ordinal; trust gaps): the elide-mode gaps (−0.02…−0.21) are *smaller* than the pre-elision
+apikit one-shots' (0.55/0.64 vs 0.83 → −0.28/−0.19, the 2026-06-06 rows) — cure-era output sits inside
+the model's historical band, and the parity pre-commitment is met: **no evidence elision degrades
+quality.** Two structural notes, honestly held. (1) Quality declines monotonically with pass count
+(1→0.79, 2→0.69, 4→0.65, 8→0.58; n=4, single sessions) — the plausible cost is *fragmented multi-pass
+construction*, not elision, which only removes re-reads of already-green specs; the clean attribution
+test (elide-off multi-pass completions at 11k) cannot exist — they are 0/24, the very reason the lever
+ships. (2) The same baseline code re-scored 0.70–0.78 across four fresh sessions — the judge's own
+single-session noise, and why gaps, not absolutes. Bonus, and a caution about the bar itself: **all
+four blind sessions independently flagged a real slice-aliasing bug in the *Sonnet* baseline**
+(`byID` holding pointers into a reallocating `[]T`; list-vs-byID divergence after growth) that its
+green tests never catch — the over-fit-to-tests gap the blind judge exists to measure, found this
+time on the *reference* side.
+
+### Closed
+
+The failure mode this document set out to fix — re-orientation starvation on the target model — is
+measured, mechanised away by a default-on, gate-safe, ablatable lever, replicated on a second composer
+task, bounded on the task axis (Part 8) and the model axis (Part 10), and now quality-checked under
+the cure. What still stagnates does so from *different* diseases, each dispositioned above.
+Stagnation-in-general is not "solved" — Part 10's two-condition boundary stands — but no further lever
+is planned: **this line of work is closed.** Reopen criteria, so the closure stays falsifiable: a
+third model with a demonstrably re-read-bound floor that elision fails to clear (breaks the model-axis
+boundary); the durable-progress signature above (builds Lever 3); or an elision-attributable quality
+regression at matched pass count (revisits the default).
