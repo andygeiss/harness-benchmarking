@@ -623,3 +623,60 @@ is planned: **this line of work is closed.** Reopen criteria, so the closure sta
 third model with a demonstrably re-read-bound floor that elision fails to clear (breaks the model-axis
 boundary); the durable-progress signature above (builds Lever 3); or an elision-attributable quality
 regression at matched pass count (revisits the default).
+
+---
+
+## Part 12 — Instrument recalibration: the Part-11 quality readings under a new judge (2026-06-09)
+
+Closing the line froze the *harness*; the measuring instrument then moved. The `judge` skill was
+re-instrumented the same day (commit `db49826`): **Fable referees** (the referee should be the most
+capable model available, and the judge must author no candidate), and **Opus joins Sonnet as a
+second, frontier bar** — three rows per `pair_id`. Judge scores are comparable only within one
+referee, so every Part-11 subject was re-judged — same bytes, fixed bars, one Fable session, blind
+to tests as ever — to learn which Part-11 conclusions are instrument-robust. Rows
+`apikit-2026-06-09T22:09:12Z` (26k) and `apikit-11k-p{2,4,8}-2026-06-09T22:17:09Z` in
+`judgments.jsonl`; the Opus bar was generated fresh from the same seed and is preserved as
+`logs/candidates/apikit-opus-baseline`.
+
+| candidate | passes | Opus-era (Part 11) | Fable-era | offset | gap vs Sonnet bar (Fable) |
+|---|--:|--:|--:|--:|--:|
+| 26k one-shot | 1 | **0.79** | **0.65** | −0.14 | **+0.12** |
+| elide-1 | 2 | 0.69 | 0.54 | −0.15 | +0.02 |
+| elide-2 | 4 | 0.65 | 0.57 | −0.08 | +0.04 |
+| elide-3 | 8 | 0.58 | 0.39 | −0.19 | −0.13 |
+| Sonnet bar (same bytes) | — | 0.70–0.78 (4 sessions) | 0.53 | ≈−0.21 | — |
+| Opus bar (new) | — | — | 0.76 | — | +0.23 |
+
+**Instrument-robust.** (1) The decline's *endpoints*: the one-shot is best and the 8-pass run worst
+under both referees, by wide margins. (2) The headline rank — **26k > Sonnet — replicates** (+0.08 →
++0.12), the only subject-vs-bar rank that survives the referee change. (3) The Part-11 parity
+pre-commitment: cure-era gaps under Fable (+0.02/+0.04/−0.13) still sit at or inside the historical
+band — still **no evidence elision degrades quality**, and no reopen criterion fires: the shifts
+here are judge-attributable, not elision-attributable.
+
+**Softened.** Part 11's "quality declines *monotonically* with pass count" overclaimed: the 2-vs-4
+ordering flips across referees (0.69 > 0.65 under Opus, 0.54 < 0.57 under Fable; Δ ≤ 0.05 both
+times). Endpoints robust, middle pair tied within single-judge noise. Likewise the 2/4-pass runs
+edge *above* the Sonnet bar under Fable after trailing it under Opus — Sonnet's aliasing bug
+(Part 11's bonus finding) is priced harder by the new referee — so near-zero gaps read as ties.
+
+**Strengthened — the fragmentation mechanism is now visible in the artifact.** Fable surfaced three
+behavioural bugs in the 8-pass run that four Opus sessions never recorded: malformed JSON → *silent
+empty 200* (create and update, all three packages — the contract says 400); `byEmail[old] = 0`
+instead of `delete` → phantom 409 on freed emails; `tasks.handleGet` reading the store with no lock
+while its siblings RLock. And the drift is legible per package: `strconv.Atoi` in `users` vs a
+hand-rolled digit loop ("avoid import", beside an `fmt` import) in `tasks`/`notes`; `parseID` vs
+`extractID` for the same concept. Part 11 could only *suspect* fragmented multi-pass construction
+as the cost; the 8-pass artifact shows the signature directly — passes that no longer share
+conventions, and error paths left unfinished.
+
+**Calibration.** Mean offset on fixed bytes ≈ **−0.14** (spread −0.08…−0.21): Fable grades the same
+code roughly one band harsher, uniformly enough that gaps and most ranks carry. Absolute judgment
+scores are referee-denominated — `judge_model` splits the eras in `judgments.jsonl`, and cross-era
+claims belong in gaps, never absolutes. One same-referee variance anchor: a post-closure 32k
+two-pass run scored 0.36 (a *regressed* delete→list panic — pair `apikit-2026-06-09T20:33:40Z`)
+against the 11k two-pass run's 0.54 — at matched pass count, run-to-run variance dominates the
+pass-count effect, which is why every score here stays ordinal and single-sample claims stay soft.
+
+The closure stands: nothing here touches the lever, the gate, or the reopen criteria. This part is
+the calibration record for reading `judgments.jsonl` across the referee change.
