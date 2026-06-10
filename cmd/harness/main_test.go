@@ -166,6 +166,66 @@ func TestRunCompletesViaProbe(t *testing.T) {
 	}
 }
 
+// TestRunRecordsElidedReads drives the shipped elide-on configuration — a
+// non-nil ElideState wired into read_file — through run(). The model reads a
+// spec (real bytes: nothing is certified yet), calls done (the gate fails but
+// certifies the spec's package green — the onPass feed), re-reads the same
+// spec, and completes. Exactly the second read must be stubbed — elision
+// starts at the verifier's certification, not before — and the count must land
+// in the runs.jsonl record. Every other run() test passes elide=nil, so
+// without this case the default-on path through the loop and the elided_reads
+// recording would be exercised nowhere.
+func TestRunRecordsElidedReads(t *testing.T) {
+	readCall := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"r","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"users/users_test.go\"}"}}]}}],"usage":{"total_tokens":10}}`
+	doneCall := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"d","type":"function","function":{"name":"done","arguments":"{\"summary\":\"ok\"}"}}]}}],"usage":{"total_tokens":10}}`
+
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, "users"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := "package users\n\nimport \"testing\"\n\nfunc TestUsers(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join(work, "users", "users_test.go"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	elide := tool.NewElideState()
+	var calls int
+	verify := func(_ context.Context) (bool, string, error) {
+		calls++
+		if calls == 1 {
+			// Mimic GoTestVerifier mid-task: the gate fails overall, but the
+			// same run certifies the already-green package via onPass.
+			elide.Update(map[string]bool{"users": true})
+			return false, "api: tests failing", nil
+		}
+		return true, "", nil
+	}
+	reg := tool.NewRegistry()
+	reg.Register(tool.ReadFile(work, elide))
+	reg.Register(tool.Done(verify))
+	sess := newSession(scriptedServer(t, readCall, doneCall, readCall, doneCall), reg)
+
+	logDir := t.TempDir()
+	code := run(context.Background(), discardLog(), sess, work, logDir, "sys", "go", 3, true, verify, elide, RunLog{ElidePassing: true, MaxIters: 5})
+	if code != exitCompleted {
+		t.Fatalf("exit = %d, want exitCompleted (%d)", code, exitCompleted)
+	}
+	if got := elide.Elided(); got != 1 {
+		t.Errorf("elided reads = %d, want exactly 1 (only the re-read after certification)", got)
+	}
+	data, err := os.ReadFile(filepath.Join(logDir, "runs.jsonl"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var got RunLog
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("log not valid JSON: %v", err)
+	}
+	if got.Outcome != "completed" || !got.ElidePassing || got.ElidedReads != 1 {
+		t.Errorf("log outcome=%q elide_passing=%v elided_reads=%d, want completed/true/1", got.Outcome, got.ElidePassing, got.ElidedReads)
+	}
+}
+
 // TestSystemPromptMemoryToggle: the built-in prompt mentions PROGRESS.md only
 // when memory is on, and otherwise shares the same head, so the two modes differ
 // by exactly the memory guidance and cannot silently drift apart.

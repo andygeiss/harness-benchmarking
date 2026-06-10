@@ -265,8 +265,9 @@ At `apikit`@11k it is the first change other than raising the budget to complete
 **replicates on a second task, `graphkit`@11k, 6/6 vs 0/6** (p≈0.001 — clean separation in that A/B, 
 though the cumulative no-elision ledger at that budget is 1/20, not zero: the floor is near-
 deterministic, not absolute). It raises completion *probability* rather than guaranteeing it 
-(3/7 `apikit` runs still stagnate, and the rate is session-variable — a later same-config batch ran 
-15/16; `graphkit` did not stagnate, at n=6). A third, deliberately *flat* task (`datakit` — five 
+(3/7 `apikit` runs still stagnate, and the rate is session-variable — a later clean batch ran 7/8 on this 
+config, 15/16 pooling its other arm, which also carried the null `go doc`-interface lever; 
+`graphkit` did not stagnate, at n=6). A third, deliberately *flat* task (`datakit` — five 
 independent packages, no composer) **bounds** the lever: the byte-reduction still generalises 
 (−21% reads), but `datakit` has no hard floor to clear — baseline completion is noisy and 
 *non-monotonic* in budget (3/6 at 8k, 5/6 at 6k) — so no significant completion effect was measured 
