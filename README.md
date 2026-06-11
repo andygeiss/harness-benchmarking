@@ -1,19 +1,32 @@
-# harness
+# Harness Benchmarking
 
-An autonomous AI agent harness — a Go implementation of the **"Ralph loop."** It
-runs a single fixed prompt against a local LLM and lets the model act through
-tools until the task *verifiably* completes, with no human in the loop.
+A research project that measures how small local LLMs behave when run as
+autonomous coding agents: where they stagnate and why, how their code quality
+compares to frontier baselines, and which harness levers measurably move
+completion. The instrument is a purpose-built agent harness — a Go
+implementation of the **"Ralph loop"** — that runs a single fixed prompt
+against a local LLM and lets the model act through tools until the task
+*verifiably* completes, with no human in the loop.
 
-The default target is `Qwen3.6-35B-A3B-oQ4-fp16-mtp` served by a local **oMLX**
-server (an OpenAI-compatible API) on an Apple Silicon Mac, but any
+The default subject is `Qwen3.6-35B-A3B-oQ4-fp16-mtp` served by a local
+**oMLX** server (an OpenAI-compatible API) on an Apple Silicon Mac, but any
 OpenAI-compatible endpoint and model work via flags.
+
+The measurements are the product. They live in
+[docs/stagnation.md](docs/stagnation.md) (the stagnation study: why
+fixed-window passes hit a re-orientation floor, and what clears it), in
+`logs/runs.jsonl` (one record per run), and in `logs/judgments.jsonl`
+(out-of-band code-quality scores, head-to-head against real Sonnet and Opus
+solutions — see [Code quality is a separate
+axis](#code-quality-is-a-separate-axis)). The rest of this README documents
+the instrument and summarises the findings.
 
 > **Working in this repo?** Read [CLAUDE.md](CLAUDE.md) first. It holds the
 > engineering philosophy (disciplined minimalism, standard library only, Go as
 > the only language) and the cross-file invariants you must not break. This
 > README is the conceptual overview; CLAUDE.md is the contract.
 
-## What it does
+## What the harness does
 
 A run gives the model a task — a prompt plus a workspace seed — and a small set
 of sandboxed tools: read / write / edit files, list directories, run the Go
