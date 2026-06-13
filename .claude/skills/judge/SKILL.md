@@ -1,6 +1,6 @@
 ---
 name: judge
-description: Score the Go code from a harness run (in ./sandbox or an example workspace) for quality on a 0–1 scale — contract fidelity, simplicity/no-bloat, Go idiomaticity, readability, robustness, performance. Opus referees; the bar is a real Sonnet-medium solution to the same contract, scored head-to-head (both judged blind on the same rubric). Appends one record per candidate to logs/judgments.jsonl, each carrying a deterministic modernize-finding count and an optional paired modernize --fix uplift as a noise-free idiomaticity signal. Use after a run to measure code quality; it never gates completion. Best run under Opus in a fresh session.
+description: Score the Go code from a harness run (in ./sandbox or an example workspace) for quality on a 0–1 scale — contract fidelity, simplicity/no-bloat, Go idiomaticity, readability, robustness, security, performance. Opus referees; the bar is a real Sonnet-medium solution to the same contract, scored head-to-head (both judged blind on the same rubric). Appends one record per candidate to logs/judgments.jsonl, each carrying a deterministic modernize-finding count and an optional paired modernize --fix uplift as a noise-free idiomaticity signal. Use after a run to measure code quality; it never gates completion. Best run under Opus in a fresh session.
 ---
 
 # judge — Opus-as-a-judge for harness output
@@ -152,26 +152,32 @@ measures (local vs Sonnet, run A vs B, config vs config), not that code is
    what a rewrite of the *subject* would change), then **append one JSON line
    per candidate** to `logs/judgments.jsonl` (schema below), sharing a `pair_id`.
 
-## Dimensions and weights (rubric `judge/v1`)
+## Dimensions and weights (rubric `judge/v2`)
 
 | Dimension (key)               | Weight | 1.0                                                                      | 0.0                                                              |
 |-------------------------------|:------:|-------------------------------------------------------------------------|-----------------------------------------------------------------|
-| Contract fidelity (`contract_fidelity`) | 0.30 | satisfies every clause of `PROMPT.md`, incl. unstated edges; survives stricter tests | meets only the happy path; brittle on edges the contract implies |
-| Simplicity & restraint (`simplicity`)   | 0.20 | smallest correct design; no needless abstraction, dead code, or premature generality | over-engineered or bloated; indirection the task does not need   |
-| Go idiomaticity (`idiomaticity`)        | 0.15 | idiomatic stdlib Go; natural naming, errors, control flow               | fights the language; reinvents the stdlib                       |
-| Readability (`readability`)             | 0.15 | clear structure; comments earn their place                              | hard to follow; noisy or absent where needed                    |
-| Robustness (`robustness`)               | 0.12 | correct error paths; no panics on bad input; sensible edges             | crashes or misbehaves on malformed input                        |
-| Performance (`performance`)             | 0.08 | sane algorithms and allocation discipline                               | gratuitous waste or accidental quadratics                       |
+| Contract fidelity (`contract_fidelity`) | 0.28 | satisfies every clause of `PROMPT.md`, incl. unstated edges; survives stricter tests | meets only the happy path; brittle on edges the contract implies |
+| Simplicity & restraint (`simplicity`)   | 0.18 | smallest correct design; no needless abstraction, dead code, or premature generality | over-engineered or bloated; indirection the task does not need   |
+| Go idiomaticity (`idiomaticity`)        | 0.14 | idiomatic stdlib Go; natural naming, errors, control flow               | fights the language; reinvents the stdlib                       |
+| Readability (`readability`)             | 0.13 | clear structure; comments earn their place                              | hard to follow; noisy or absent where needed                    |
+| Robustness (`robustness`)               | 0.10 | correct error paths; no panics on bad input; sensible edges             | crashes or misbehaves on malformed input                        |
+| Security (`security`)                   | 0.10 | validates and bounds untrusted input; no injection, path-escape, or resource-exhaustion vectors; safe defaults | trusts input blindly; exploitable injection, path traversal, or unbounded resource use |
+| Performance (`performance`)             | 0.07 | sane algorithms and allocation discipline                               | gratuitous waste or accidental quadratics                       |
 
 Weights sum to 1.0 and encode this project's ethos — contract fidelity and
-restraint dominate; perf rarely discriminates on these self-contained tasks.
-They are a starting point: change them and bump `rubric_version`. Per dimension,
-anchor with the row's cells so scores do not compress into 0.6–0.9 — 1.0 = the
-left cell, 0.0 = the right cell, 0.5 = a competent-but-unremarkable middle. Apply
-the same cells to subject and baseline alike.
+restraint dominate; perf, and for now security, rarely discriminate on these
+self-contained tasks. They are a starting point: change them and bump
+`rubric_version`. Per dimension, anchor with the row's cells so scores do not
+compress into 0.6–0.9 — 1.0 = the left cell, 0.0 = the right cell, 0.5 = a
+competent-but-unremarkable middle. Apply the same cells to subject and baseline
+alike.
 
-**Security is intentionally omitted** — near-constant on these algorithmic tasks.
-Add it (and reweight) once examples start parsing untrusted input.
+**Security is scored but usually near-constant** — on these self-contained
+algorithmic tasks the contestants rarely differ on it, so it ties and the
+subject−baseline gap still comes from the other dimensions; score the tie
+honestly rather than inventing a difference. It earns its 0.10 once examples
+start parsing untrusted input (path handling, deserialization, command
+construction) — judged by reading the code, not by adding a scanner tool.
 
 ## Output
 
@@ -191,7 +197,7 @@ judged code; give both rows the same `pair_id` so the comparison can be rejoined
 {
   "time": "2026-01-01T00:00:00Z",
   "judge_model": "claude-opus-4-8",
-  "rubric_version": "judge/v1",
+  "rubric_version": "judge/v2",
   "method": "head-to-head",
   "pair_id": "todo-2026-01-01T00:00:00Z",
   "role": "subject",
@@ -207,9 +213,10 @@ judged code; give both rows the same `pair_id` so the comparison can be rejoined
     "idiomaticity":      {"score": 0.0, "why": "..."},
     "readability":       {"score": 0.0, "why": "..."},
     "robustness":        {"score": 0.0, "why": "..."},
+    "security":          {"score": 0.0, "why": "..."},
     "performance":       {"score": 0.0, "why": "..."}
   },
-  "weights": {"contract_fidelity":0.30,"simplicity":0.20,"idiomaticity":0.15,"readability":0.15,"robustness":0.12,"performance":0.08},
+  "weights": {"contract_fidelity":0.28,"simplicity":0.18,"idiomaticity":0.14,"readability":0.13,"robustness":0.10,"security":0.10,"performance":0.07},
   "score": 0.0,
   "modernize_findings": 0,
   "modernize_uplift": {"raw_score": 0.0, "fixed_score": 0.0, "delta": 0.0, "method": "paired-same-session", "samples": 1, "calibrated": false},
@@ -242,6 +249,13 @@ they are transient (the uplift's `--fix` runs on a copy).
   produced a row, `role`/`subject_model` say which bars were present. To set a
   new run against a Fable-era result, re-judge the old subject under Opus rather
   than mixing eras.
+- **`judge/v2` added a weighted security dimension** — a v2 `score` is not
+  comparable to a v1 `score`: the scalar's basis changed (six dims reweighted to
+  make room for `security` at 0.10), the same way referee eras don't mix.
+  `rubric_version` says which basis a row uses; do not diff a v2 scalar against a
+  v1 one. The subject−baseline **gap** is more portable, but security ties on
+  today's algorithmic tasks, so v2 mostly re-slices the same signal until an
+  example parses untrusted input.
 - **The baseline is one sample, written directly** — the comparison inherits
   Sonnet's run-to-run variance (generate k baselines and take the median for a
   stable bar), and reflects the model *writing the code directly*, not driven
@@ -257,7 +271,7 @@ they are transient (the uplift's `--fix` runs on a copy).
   scores it is reproducible (pinned to the `golangci-lint` version), so trust it as
   a hard number where you treat the scores as ordinal.
 - **`modernize_uplift` is bounded and noisy — directional only** — modernize moves
-  just idiomaticity/readability/(a little) performance, ≈0.38 of the rubric weight
+  just idiomaticity/readability/(a little) performance, ≈0.34 of the rubric weight
   and only a fraction of that, so its scalar effect is a few *hundredths* — at or
   below this judge's single-session noise. Paired same-session scoring cancels the
   session's shared bias in the delta (why step 7 insists on one session), but the
