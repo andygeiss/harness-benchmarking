@@ -16,8 +16,8 @@ The measurements are the product. They live in
 [docs/stagnation.md](docs/stagnation.md) (the stagnation study: why
 fixed-window passes hit a re-orientation floor, and what clears it), in
 `logs/runs.jsonl` (one record per run), and in `logs/judgments.jsonl`
-(out-of-band code-quality scores, head-to-head against real Sonnet and Opus
-solutions — see [Code quality is a separate
+(out-of-band code-quality scores, head-to-head against a real Sonnet-medium
+solution — see [Code quality is a separate
 axis](#code-quality-is-a-separate-axis)). The rest of this README documents
 the instrument and summarises the findings.
 
@@ -307,10 +307,10 @@ Part 10.
 
 Passing the gate means the code is *correct*, not that it is *good*; the harness
 only gates on the first. The **judge** skill (`.claude/skills/judge/SKILL.md`)
-measures the second, out of band: a Fable-as-judge rubric scores the produced
+measures the second, out of band: an Opus-as-judge rubric scores the produced
 code on six Go dimensions (contract fidelity, simplicity, idiomaticity,
 readability, robustness, performance), **blind to the spec's tests** and
-head-to-head against real Sonnet and Opus solutions to the same contract. Each
+head-to-head against a real Sonnet-medium solution to the same contract. Each
 record also carries a deterministic `modernize`-finding count as a noise-free
 idiomaticity signal. It appends to `logs/judgments.jsonl`, is never a gate, and
 is never seen by the agent — keeping it outside the loop is what keeps it honest.
