@@ -84,6 +84,25 @@ harness against it. Any extra flags are forwarded to the harness:
   is no floor to clear ([docs/stagnation.md](../docs/stagnation.md) Part 8).
   Validated satisfiable and deterministic (93 test-passes under `-count=3`)
   before use.
+- **pipeline** — a context-aware **concurrent fan-out/fan-in** pipeline (module
+  `example/pipeline`, one function): `Pipeline(ctx, in, workers, fn)` runs `fn`
+  over a slice across a bounded pool of `workers` goroutines and returns the
+  results in input order, honouring `ctx` cancellation. The **first example
+  whose contract is the concurrency itself** — the substrate for the judge's
+  `concurrency_safety` dimension, which otherwise ties on every non-web example.
+  The split is the point: because the done-gate runs `go test` but never
+  `-race` (the harness pins `CGO_ENABLED=0`), the spec gates only what a
+  race-free run can prove deterministically — correct in-order output, real
+  **≥`workers`** fan-out (an injected `fn` parks until the pool fills, so a
+  sequential solution hangs and an in-test timeout fails it), clean termination,
+  and prompt cancellation (`ctx.Err()` with partial results discarded).
+  Race-freedom, goroutine-leak freedom, and the exact-`workers` *upper* bound
+  (an unbounded one-goroutine-per-item solution passes the gate) are
+  deliberately left to the out-of-loop judge, which reads them off the code — so
+  a model can pass the gate with racy or leaky code, exactly the gate-vs-judge
+  gap the project exists to measure. Validated before use: a correct pool is
+  green under `-count=3`, a sequential solution fails only the fan-out test via a
+  clean timeout, and an unbounded solution passes.
 
 ## Cross-pass memory (and why these examples one-shot here)
 
