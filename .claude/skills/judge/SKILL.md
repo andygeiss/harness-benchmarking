@@ -1,6 +1,6 @@
 ---
 name: judge
-description: Score the Go code from a harness run (in ./sandbox or an example workspace) for quality on a 0–1 scale — contract fidelity, simplicity/no-bloat, Go idiomaticity, readability, robustness, security, performance. Opus referees; the bar is a real Sonnet-medium solution to the same contract, scored head-to-head (both judged blind on the same rubric). Appends one record per candidate to logs/judgments.jsonl, each carrying a deterministic modernize-finding count and an optional paired modernize --fix uplift as a noise-free idiomaticity signal. Use after a run to measure code quality; it never gates completion. Best run under Opus in a fresh session.
+description: Score the Go code from a harness run (in ./sandbox or an example workspace) for quality on a 0–1 scale — contract fidelity, simplicity/no-bloat, Go idiomaticity, readability, robustness, security, concurrency safety, performance. Opus referees; the bar is a real Sonnet-medium solution to the same contract, scored head-to-head (both judged blind on the same rubric). Appends one record per candidate to logs/judgments.jsonl, each carrying a deterministic modernize-finding count and an optional paired modernize --fix uplift as a noise-free idiomaticity signal. Use after a run to measure code quality; it never gates completion. Best run under Opus in a fresh session.
 ---
 
 # judge — Opus-as-a-judge for harness output
@@ -152,21 +152,22 @@ measures (local vs Sonnet, run A vs B, config vs config), not that code is
    what a rewrite of the *subject* would change), then **append one JSON line
    per candidate** to `logs/judgments.jsonl` (schema below), sharing a `pair_id`.
 
-## Dimensions and weights (rubric `judge/v2`)
+## Dimensions and weights (rubric `judge/v3`)
 
 | Dimension (key)               | Weight | 1.0                                                                      | 0.0                                                              |
 |-------------------------------|:------:|-------------------------------------------------------------------------|-----------------------------------------------------------------|
-| Contract fidelity (`contract_fidelity`) | 0.28 | satisfies every clause of `PROMPT.md`, incl. unstated edges; survives stricter tests | meets only the happy path; brittle on edges the contract implies |
-| Simplicity & restraint (`simplicity`)   | 0.18 | smallest correct design; no needless abstraction, dead code, or premature generality | over-engineered or bloated; indirection the task does not need   |
-| Go idiomaticity (`idiomaticity`)        | 0.14 | idiomatic stdlib Go; natural naming, errors, control flow               | fights the language; reinvents the stdlib                       |
-| Readability (`readability`)             | 0.13 | clear structure; comments earn their place                              | hard to follow; noisy or absent where needed                    |
-| Robustness (`robustness`)               | 0.10 | correct error paths; no panics on bad input; sensible edges             | crashes or misbehaves on malformed input                        |
-| Security (`security`)                   | 0.10 | validates and bounds untrusted input; no injection, path-escape, or resource-exhaustion vectors; safe defaults | trusts input blindly; exploitable injection, path traversal, or unbounded resource use |
-| Performance (`performance`)             | 0.07 | sane algorithms and allocation discipline                               | gratuitous waste or accidental quadratics                       |
+| Contract fidelity (`contract_fidelity`) | 0.27 | satisfies every clause of `PROMPT.md`, incl. unstated edges; survives stricter tests | meets only the happy path; brittle on edges the contract implies |
+| Simplicity & restraint (`simplicity`)   | 0.17 | smallest correct design; no needless abstraction, dead code, or premature generality | over-engineered or bloated; indirection the task does not need   |
+| Go idiomaticity (`idiomaticity`)        | 0.13 | idiomatic stdlib Go; natural naming, errors, control flow               | fights the language; reinvents the stdlib                       |
+| Readability (`readability`)             | 0.12 | clear structure; comments earn their place                              | hard to follow; noisy or absent where needed                    |
+| Robustness (`robustness`)               | 0.09 | correct error paths; no panics on bad input; sensible edges             | crashes or misbehaves on malformed input                        |
+| Security (`security`)                   | 0.09 | validates and bounds untrusted input; no injection, path-escape, or resource-exhaustion vectors; safe defaults | trusts input blindly; exploitable injection, path traversal, or unbounded resource use |
+| Concurrency safety (`concurrency_safety`) | 0.07 | safe for concurrent use as the contract implies — shared state guarded (mutex/channel/sharding), `context` cancellation honored, no goroutine or resource leaks; `go vet` clean on copylocks/lostcancel | data races under concurrent use (e.g. unguarded map behind an `http.Handler`); leaked goroutines; ignored cancellation; deadlock-prone channels |
+| Performance (`performance`)             | 0.06 | sane algorithms and allocation discipline                               | gratuitous waste or accidental quadratics                       |
 
 Weights sum to 1.0 and encode this project's ethos — contract fidelity and
-restraint dominate; perf, and for now security, rarely discriminate on these
-self-contained tasks. They are a starting point: change them and bump
+restraint dominate; perf, security, and — outside the web tasks — concurrency
+safety rarely discriminate on these self-contained tasks. They are a starting point: change them and bump
 `rubric_version`. Per dimension, anchor with the row's cells so scores do not
 compress into 0.6–0.9 — 1.0 = the left cell, 0.0 = the right cell, 0.5 = a
 competent-but-unremarkable middle. Apply the same cells to subject and baseline
@@ -175,9 +176,20 @@ alike.
 **Security is scored but usually near-constant** — on these self-contained
 algorithmic tasks the contestants rarely differ on it, so it ties and the
 subject−baseline gap still comes from the other dimensions; score the tie
-honestly rather than inventing a difference. It earns its 0.10 once examples
+honestly rather than inventing a difference. It earns its 0.09 once examples
 start parsing untrusted input (path handling, deserialization, command
 construction) — judged by reading the code, not by adding a scanner tool.
+
+**Concurrency safety ties on the single-threaded tasks but bites on the web
+ones** — calc, reverse, datakit, and graphkit run in one goroutine, so it scores
+1.0 for both contestants there; score that tie honestly. It discriminates on
+`todo` and `apikit`, whose contracts demand a store "safe for concurrent use":
+an `http.Handler` is called concurrently by net/http, so an unguarded map behind
+one is a data race that still passes the single-threaded provided test — exactly
+the over-fitting the blind judge exists to catch. Judge it by **reading** the
+code (shared state guarded? `context` honored? goroutines or resources leaked?)
+with `go vet`'s copylocks/lostcancel/loopclosure as the deterministic backstop —
+never `go test -race`, which would run the spec the judge is blind to.
 
 ## Output
 
@@ -197,7 +209,7 @@ judged code; give both rows the same `pair_id` so the comparison can be rejoined
 {
   "time": "2026-01-01T00:00:00Z",
   "judge_model": "claude-opus-4-8",
-  "rubric_version": "judge/v2",
+  "rubric_version": "judge/v3",
   "method": "head-to-head",
   "pair_id": "todo-2026-01-01T00:00:00Z",
   "role": "subject",
@@ -214,9 +226,10 @@ judged code; give both rows the same `pair_id` so the comparison can be rejoined
     "readability":       {"score": 0.0, "why": "..."},
     "robustness":        {"score": 0.0, "why": "..."},
     "security":          {"score": 0.0, "why": "..."},
+    "concurrency_safety":{"score": 0.0, "why": "..."},
     "performance":       {"score": 0.0, "why": "..."}
   },
-  "weights": {"contract_fidelity":0.28,"simplicity":0.18,"idiomaticity":0.14,"readability":0.13,"robustness":0.10,"security":0.10,"performance":0.07},
+  "weights": {"contract_fidelity":0.27,"simplicity":0.17,"idiomaticity":0.13,"readability":0.12,"robustness":0.09,"security":0.09,"concurrency_safety":0.07,"performance":0.06},
   "score": 0.0,
   "modernize_findings": 0,
   "modernize_uplift": {"raw_score": 0.0, "fixed_score": 0.0, "delta": 0.0, "method": "paired-same-session", "samples": 1, "calibrated": false},
@@ -256,6 +269,15 @@ they are transient (the uplift's `--fix` runs on a copy).
   v1 one. The subject−baseline **gap** is more portable, but security ties on
   today's algorithmic tasks, so v2 mostly re-slices the same signal until an
   example parses untrusted input.
+- **`judge/v3` added a weighted concurrency_safety dimension** — a v3 `score` is
+  not comparable to a v2 `score`: each of the seven v2 dimensions ceded 0.01 to
+  fund `concurrency_safety` at 0.07, so the scalar's basis changed again (the
+  same way v1→v2 and referee eras don't mix). `rubric_version` says which basis a
+  row uses; do not diff a v3 scalar against a v2 one. The subject−baseline
+  **gap** is more portable, but concurrency safety ties on the single-threaded
+  tasks (calc, reverse, datakit, graphkit) and re-slices the same signal there —
+  it moves the gap on `todo` and `apikit`, whose contracts require a store safe
+  for concurrent use.
 - **The baseline is one sample, written directly** — the comparison inherits
   Sonnet's run-to-run variance (generate k baselines and take the median for a
   stable bar), and reflects the model *writing the code directly*, not driven

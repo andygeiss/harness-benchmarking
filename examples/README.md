@@ -215,7 +215,8 @@ Passing the tests means the code is *correct* — not that it is *good*. Those a
 different axes, and the harness only gates on the first. The `judge` skill
 (`.claude/skills/judge/SKILL.md`) measures the second: it scores the produced
 code (Go idiomaticity, simplicity, contract fidelity, readability, robustness,
-performance) on a 0–1 scale, scored head-to-head against a real Sonnet-medium
+security, concurrency safety, performance) on a 0–1 scale, scored head-to-head
+against a real Sonnet-medium
 solution to the same contract (Opus referees both, **blind to the spec's
 tests**), and appends one row per candidate to `logs/judgments.jsonl` — each row
 also carrying a deterministic `modernize`-finding count and an optional paired
