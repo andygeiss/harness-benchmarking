@@ -168,6 +168,7 @@ go run ./cmd/example todo        # htmx web app: net/http + html/template + embe
 go run ./cmd/example graphkit    # six-package graph algorithms library
 go run ./cmd/example apikit      # modular JSON HTTP API (5 packages) — built for multi-pass runs
 go run ./cmd/example datakit     # five independent container packages — flat control for the stagnation study
+go run ./cmd/example pipeline    # context-aware concurrent fan-out/fan-in — first concurrency example
 go run ./cmd/example stuck       # adversarial: unsatisfiable test, exercises the stagnation guard
 ```
 
