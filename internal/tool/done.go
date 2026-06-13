@@ -286,7 +286,7 @@ func moduleImportPath(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(string(b), "\n") {
+	for line := range strings.SplitSeq(string(b), "\n") {
 		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "module" {
 			return fields[1], nil
 		}
