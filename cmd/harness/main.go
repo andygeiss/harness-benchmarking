@@ -79,7 +79,7 @@ func main() {
 	verifyCmd := flag.String("verify", "go test ./...", "verification command run by the done gate (split on whitespace; cannot carry quoted or spaced arguments)")
 	maxIters := flag.Int("max-iters", 25, "maximum Ralph passes")
 	maxSteps := flag.Int("max-steps", 40, "maximum tool steps per pass")
-	ctxLimit := flag.Int("ctx-limit", 32768, "end a pass once total tokens reach this")
+	ctxLimit := flag.Int("ctx-limit", 65536, "end a pass once total tokens reach this")
 	maxStale := flag.Int("max-stale", 3, "stop after this many consecutive passes leave the workspace unchanged (0 disables)")
 	logDir := flag.String("log-dir", "logs", "directory for the JSONL run log, relative to the working dir (empty disables)")
 	protectTests := flag.Bool("protect-tests", true, "refuse agent writes to *_test.go files — the tests are the fixed spec, not the model's to author")
