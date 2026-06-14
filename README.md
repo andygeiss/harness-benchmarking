@@ -317,6 +317,19 @@ record also carries a deterministic `modernize`-finding count as a noise-free
 idiomaticity signal. It appends to `logs/judgments.jsonl`, is never a gate, and
 is never seen by the agent — keeping it outside the loop is what keeps it honest.
 
+**First measured result — `pipeline`, three-way.** Judged blind under an Opus
+referee against a Sonnet-medium bar, the concurrency example lands both local
+models at a near-identical weighted score — **27B-oQ8 0.856, 35B-A3B-oQ6 0.852**,
+about **0.045 below Sonnet (0.897)**. They trail for the same reasons: a C-style
+worker loop where `for range workers` reads cleaner, two redundant index types,
+and `len(in)`-sized channel buffers rather than `workers`-sized. Contract fidelity
+and security barely separate the three; the gap is idiomaticity and allocation
+discipline. Notably the 35B one-shot the task ~17× faster in wall-clock (37.6 s vs
+648.7 s) and without the 27B's write-then-rewrite, yet its *final code* scores no
+higher — speed and one-shot cleanliness are not code quality. Scores are ordinal
+and single-sample (trust the subject−bar gap, not the absolute number); rows in
+`logs/judgments.jsonl`.
+
 ## License
 
 [MIT](LICENSE) © Andy Geiss
