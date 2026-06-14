@@ -8,7 +8,7 @@ implementation of the **"Ralph loop"** — that runs a single fixed prompt
 against a local LLM and lets the model act through tools until the task
 *verifiably* completes, with no human in the loop.
 
-The default subject is `Qwen3.6-35B-A3B-oQ4-fp16-mtp` served by a local
+The default subject is `Qwen3.6-35B-A3B-oQ6-mtp` served by a local
 **oMLX** server (an OpenAI-compatible API) on an Apple Silicon Mac, but any
 OpenAI-compatible endpoint and model work via flags.
 
