@@ -156,6 +156,38 @@ Defaults target the local setup (model name, `:1234` endpoint, Qwen3
 thinking-mode sampling: temp 0.6 / top_p 0.95 / top_k 20); all are
 flag-overridable.
 
+## Working across several task folders
+
+The harness drives one task in one workspace, so several independent tasks are
+simply several runs: give each its own folder holding its own `PROMPT.md`, and
+run the harness once per folder. Keep it sequential — one local model serves one
+request at a time, so parallel runs only contend for the same weights.
+
+```bash
+go run ./cmd/harness -workdir tasks/one   -prompt tasks/one/PROMPT.md   -verify "go test ./..."
+go run ./cmd/harness -workdir tasks/two   -prompt tasks/two/PROMPT.md   -verify "go build ./..."
+go run ./cmd/harness -workdir tasks/three -prompt tasks/three/PROMPT.md   # -verify defaults to go test ./...
+```
+
+This is not new machinery — it falls out of flags the harness already has:
+
+- **`-prompt` (the task) and `-workdir` (the workspace) are independent**, so a
+  folder that holds both its prompt and its code is a complete, isolated unit of
+  work; nothing leaks between folders.
+- **`-verify` is per-invocation**, so each task gates on its own command — the
+  default `go test ./...` for a task that ships a spec, a plainer `go build ./...`
+  or `go vet ./...` for one that does not.
+- **All runs share one `logs/runs.jsonl`** (the default `-log-dir`), and each
+  record's `task` field is the prompt path, so the lines stay distinguishable
+  without a per-folder log split. Launch them from the same directory so the log
+  collects in one place.
+
+Two things to keep right: give each folder its **own `go.mod`** so its
+`go test ./...` is scoped to that task alone, and remember that a non-`go test`
+`-verify` falls back to an **exit-status-only** check — it confirms the command
+exited 0, not that the work is correct (see the gate caveats in
+[CLAUDE.md](CLAUDE.md)).
+
 ## Examples
 
 Run a bundled example — this wipes `./sandbox`, copies the seed in, and runs the
